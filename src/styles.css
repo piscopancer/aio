@@ -1,0 +1,135 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@fontsource-variable/geist';
+
+/* Aio has a single dark theme; the accent is a pale apricot orange, which gives the app its name */
+:root {
+  color-scheme: dark;
+  --radius: 0.5rem;
+
+  --background: #000000;
+  --foreground: #ffffff;
+  --surface: #121212;
+  --surface-hover: #1f1f1f;
+  --card: #181818;
+  --card-foreground: var(--foreground);
+  --popover: #282828;
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.84 0.1 62);
+  --primary-hover: oklch(0.88 0.09 62);
+  --primary-foreground: oklch(0.2 0.03 62);
+  --primary-dim: oklch(0.78 0.035 62);
+  --secondary: #2a2a2a;
+  --secondary-foreground: var(--foreground);
+  --muted: #2a2a2a;
+  --muted-foreground: #b3b3b3;
+  --subtle-foreground: #7c7c7c;
+  --accent: #3e3e3e;
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.66 0.2 25);
+  --border: #2e2e2e;
+  --input: #3e3e3e;
+  --ring: var(--primary);
+}
+
+@theme inline {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-dim: var(--primary-dim);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* height of the toolbar, which also serves as the window's title bar */
+  --spacing-toolbar: 3.5rem;
+  /* width of each of the three window buttons at the right end of the toolbar */
+  --spacing-window-button: 3.25rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full overflow-hidden;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased select-none;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 25%, transparent) transparent;
+  }
+}
+
+/* Windows minimize, maximize and close buttons from tauri-plugin-decorum, laid over the right end of the toolbar in its height and colours */
+[data-tauri-decorum-tb] {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  height: var(--spacing-toolbar);
+
+  & .decorum-tb-btn {
+    width: var(--spacing-window-button);
+    height: 100%;
+    color: var(--muted-foreground);
+    transition:
+      background-color 0.1s,
+      color 0.1s;
+
+    &:hover {
+      background-color: var(--surface-hover);
+      color: var(--foreground);
+    }
+  }
+}
+
+/* Bar standing in for the title bar, keeping clear of the window buttons over its right end */
+@utility title-bar {
+  padding-right: calc(3 * var(--spacing-window-button) + 0.75rem);
+}
+
+@utility equalizer-bar {
+  animation: equalizer 0.9s ease-in-out infinite alternate;
+  transform-origin: bottom;
+}
+
+@keyframes equalizer {
+  from {
+    transform: scaleY(0.25);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}

@@ -1,0 +1,7 @@
+# Diesel CLI settings; `pnpm db:migrate` applies the migrations to a scratch database and regenerates the schema.
+
+[print_schema]
+file = "src/infrastructure/schema.rs"
+
+[migrations_directory]
+dir = "migrations"

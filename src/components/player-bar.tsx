@@ -1,0 +1,241 @@
+import { Link } from '@tanstack/react-router'
+import {
+  ListMusicIcon,
+  PauseIcon,
+  PlayIcon,
+  Repeat1Icon,
+  RepeatIcon,
+  ShuffleIcon,
+  SkipBackIcon,
+  SkipForwardIcon,
+  Volume1Icon,
+  Volume2Icon,
+  VolumeIcon,
+  VolumeXIcon,
+} from 'lucide-react'
+import { type ComponentProps, useRef, useState } from 'react'
+import { type PlaybackContext, VOLUME_MAX } from '@/bindings'
+import { ArtistMenu } from '@/components/artist-menu'
+import { Cover } from '@/components/cover'
+import { Hint } from '@/components/hint'
+import { TrackMenu } from '@/components/track-menu'
+import { Button } from '@/components/ui/button'
+import { Slider } from '@/components/ui/slider'
+import { formatClock } from '@/lib/format'
+import { toggleQueue, useLayout } from '@/lib/layout'
+import { currentItem, nextRepeat, player, usePlayer } from '@/lib/player'
+import { cn } from '@/lib/utils'
+
+/** Bottom bar: the current track, transport controls with the seek bar, then queue and volume. */
+export function PlayerBar() {
+  return (
+    <footer className="grid h-[4.5rem] grid-cols-[minmax(11rem,30%)_minmax(0,40%)_minmax(11rem,30%)] items-center px-2">
+      <NowPlaying />
+      <Transport />
+      <div className="flex items-center justify-end gap-2 pr-2">
+        <QueueToggle />
+        <VolumeControl />
+      </div>
+    </footer>
+  )
+}
+
+const songsContext = { kind: 'songs' } as const satisfies PlaybackContext
+
+/** Current track; right-click opens the track menu, or the artist menu over the artist name. */
+function NowPlaying() {
+  const track = usePlayer((state) => currentItem(state)?.track)
+  // songs added to the queue while nothing played have no view of their own; the library is theirs
+  const context = usePlayer((state) => state.context) ?? songsContext
+  if (track === undefined) return <div />
+  return (
+    <TrackMenu track={track} context={context}>
+      <div className="flex min-w-0 items-center gap-3 justify-self-start">
+        <Cover src={track.cover} kind="track" className="size-14" />
+        <div className="flex min-w-0 flex-col">
+          <Link
+            to="/albums/$albumId"
+            params={{ albumId: track.albumId }}
+            className="truncate text-sm font-medium hover:underline"
+          >
+            {track.title}
+          </Link>
+          <ArtistMenu artistId={track.artistId}>
+            <Link
+              to="/artists/$artistId"
+              params={{ artistId: track.artistId }}
+              className="w-fit max-w-full truncate text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {track.artist}
+            </Link>
+          </ArtistMenu>
+        </div>
+      </div>
+    </TrackMenu>
+  )
+}
+
+/** Accent colour plus a dot under the icon, the way toggled player options are shown. */
+const toggledClass =
+  'text-primary hover:text-primary-hover after:absolute after:bottom-0 after:size-1 after:rounded-full after:bg-current'
+
+function Transport() {
+  const hasTrack = usePlayer((state) => state.index !== null)
+  const isPlaying = usePlayer((state) => state.isPlaying)
+  const shuffle = usePlayer((state) => state.shuffle)
+  const repeat = usePlayer((state) => state.repeat)
+  const RepeatModeIcon = repeat === 'one' ? Repeat1Icon : RepeatIcon
+  const PlayPauseIcon = isPlaying ? PauseIcon : PlayIcon
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div className="flex items-center gap-4">
+        <Hint label={shuffle ? 'Disable shuffle' : 'Enable shuffle'}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn('relative', shuffle && toggledClass)}
+            onClick={() => player.setShuffle(!shuffle)}
+          >
+            <ShuffleIcon />
+          </Button>
+        </Hint>
+        <Hint label="Previous">
+          <Button variant="ghost" size="icon" disabled={!hasTrack} onClick={player.previous}>
+            <SkipBackIcon className="fill-current" />
+          </Button>
+        </Hint>
+        <Hint label={isPlaying ? 'Pause' : 'Play'}>
+          <Button variant="light" size="icon" disabled={!hasTrack} onClick={player.toggle}>
+            <PlayPauseIcon className="fill-current" />
+          </Button>
+        </Hint>
+        <Hint label="Next">
+          <Button variant="ghost" size="icon" disabled={!hasTrack} onClick={player.next}>
+            <SkipForwardIcon className="fill-current" />
+          </Button>
+        </Hint>
+        <Hint label={{ off: 'Enable repeat', all: 'Enable repeat one', one: 'Disable repeat' }[repeat]}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn('relative', repeat !== 'off' && toggledClass)}
+            onClick={() => player.setRepeat(nextRepeat[repeat])}
+          >
+            <RepeatModeIcon />
+          </Button>
+        </Hint>
+      </div>
+      <SeekBar />
+    </div>
+  )
+}
+
+/** Value shown while the user drags a slider, falling back to the backend value otherwise. */
+function useDraft(value: number) {
+  const [draft, setDraft] = useState<number | null>(null)
+  return [draft ?? value, setDraft] as const
+}
+
+/** Single-thumb slider reporting plain numbers. */
+function ValueSlider({
+  value,
+  onSlide,
+  onSlideEnd,
+  ...props
+}: Omit<ComponentProps<typeof Slider>, 'value' | 'onChange' | 'onValueChange' | 'onValueCommit'> & {
+  value: number
+  onSlide: (value: number) => void
+  onSlideEnd: (value: number) => void
+}) {
+  return (
+    <Slider
+      value={[value]}
+      onValueChange={([next]) => next !== undefined && onSlide(next)}
+      onValueCommit={([next]) => next !== undefined && onSlideEnd(next)}
+      {...props}
+    />
+  )
+}
+
+function SeekBar() {
+  const durationMs = usePlayer((state) => currentItem(state)?.track.durationMs)
+  const positionMs = usePlayer((state) => state.positionMs)
+  const [shown, setDraft] = useDraft(positionMs)
+  const clock = 'w-10 text-xs text-muted-foreground tabular-nums'
+
+  return (
+    <div className="flex w-full items-center gap-2">
+      <span className={cn(clock, 'text-right')}>{durationMs === undefined ? '-:--' : formatClock(shown)}</span>
+      <ValueSlider
+        aria-label="Seek"
+        disabled={durationMs === undefined}
+        max={durationMs ?? 1}
+        step={1000}
+        value={durationMs === undefined ? 0 : shown}
+        onSlide={setDraft}
+        onSlideEnd={(position) => {
+          setDraft(null)
+          // show the new position at once instead of waiting for the next progress event
+          usePlayer.setState({ positionMs: position })
+          player.seek(position)
+        }}
+      />
+      <span className={clock}>{durationMs === undefined ? '-:--' : formatClock(durationMs)}</span>
+    </div>
+  )
+}
+
+function QueueToggle() {
+  const queueOpen = useLayout((state) => state.queueOpen)
+  return (
+    <Hint label="Queue">
+      <Button variant="ghost" size="icon" className={cn('relative', queueOpen && toggledClass)} onClick={toggleQueue}>
+        <ListMusicIcon />
+      </Button>
+    </Hint>
+  )
+}
+
+function volumeIcon(volume: number) {
+  if (volume === 0) return VolumeXIcon
+  if (volume < VOLUME_MAX / 3) return VolumeIcon
+  if (volume < (VOLUME_MAX * 2) / 3) return Volume1Icon
+  return Volume2Icon
+}
+
+function VolumeControl() {
+  const volume = usePlayer((state) => state.volume)
+  const [shown, setDraft] = useDraft(volume)
+  /** Level to return to when unmuting. */
+  const beforeMute = useRef(VOLUME_MAX / 2)
+  const Icon = volumeIcon(shown)
+
+  return (
+    <div className="flex items-center gap-1">
+      <Hint label={volume === 0 ? 'Unmute' : 'Mute'}>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            if (volume > 0) beforeMute.current = volume
+            player.setVolume(volume > 0 ? 0 : beforeMute.current)
+          }}
+        >
+          <Icon />
+        </Button>
+      </Hint>
+      <ValueSlider
+        aria-label="Volume"
+        className="w-24"
+        max={VOLUME_MAX}
+        value={shown}
+        onSlide={(level) => {
+          setDraft(level)
+          player.setVolume(level)
+        }}
+        onSlideEnd={() => setDraft(null)}
+      />
+    </div>
+  )
+}

@@ -12,12 +12,6 @@ pub enum DownloadError {
   UnsupportedLink,
   #[error("playlist, album and artist links are not supported yet, paste a link to one song")]
   CollectionLink,
-  #[error("the song needs a title")]
-  TitleEmpty,
-  #[error("the song needs an artist")]
-  ArtistEmpty,
-  #[error("a year has four digits")]
-  YearInvalid,
   #[error("no matching song was found on YouTube Music")]
   NoMatch,
   #[error("downloading is not available on this operating system")]
@@ -174,71 +168,6 @@ impl AudioQuality {
   /// Approximate file size: bitrate times duration, ignoring the container and the cover.
   pub fn estimated_bytes(self, original_kbps: u32, duration_ms: u32) -> u64 {
     u64::from(self.kbps(original_kbps)) * u64::from(duration_ms) / 8
-  }
-}
-
-/// Title, artist and album written into a downloaded file; title and artist are never blank.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SongTags {
-  title: String,
-  artist: String,
-  album: Option<String>,
-  year: Option<u16>,
-}
-
-impl SongTags {
-  pub fn new(title: &str, artist: &str, album: Option<&str>, year: Option<u16>) -> Result<Self, DownloadError> {
-    let title = title.trim();
-    let artist = artist.trim();
-    if title.is_empty() {
-      return Err(DownloadError::TitleEmpty);
-    }
-    if artist.is_empty() {
-      return Err(DownloadError::ArtistEmpty);
-    }
-    if year.is_some_and(|year| !(1000..=9999).contains(&year)) {
-      return Err(DownloadError::YearInvalid);
-    }
-    Ok(Self {
-      title: title.to_owned(),
-      artist: artist.to_owned(),
-      album: album.map(str::trim).filter(|a| !a.is_empty()).map(str::to_owned),
-      year,
-    })
-  }
-
-  pub fn title(&self) -> &str {
-    &self.title
-  }
-
-  pub fn artist(&self) -> &str {
-    &self.artist
-  }
-
-  pub fn album(&self) -> Option<&str> {
-    self.album.as_deref()
-  }
-
-  pub fn year(&self) -> Option<u16> {
-    self.year
-  }
-
-  /// "Artist - Title" with the characters Windows forbids in file names replaced.
-  pub fn file_stem(&self) -> String {
-    const MAX_CHARS: usize = 150;
-    let raw = format!("{} - {}", self.artist, self.title);
-    let cleaned: String = raw
-      .chars()
-      .map(|c| {
-        if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
-          '_'
-        } else {
-          c
-        }
-      })
-      .take(MAX_CHARS)
-      .collect();
-    cleaned.trim_end_matches(['.', ' ']).to_owned()
   }
 }
 
@@ -447,21 +376,10 @@ mod tests {
   }
 
   #[test]
-  fn file_names_are_safe_and_unique() {
-    let tags = SongTags::new(" Thunder? ", "AC/DC", None, None).unwrap();
-    assert_eq!(tags.file_stem(), "AC_DC - Thunder_");
+  fn file_names_are_unique() {
     let taken = ["a.mp3", "a (2).mp3"];
     assert_eq!(unique_file_name("a", "mp3", |n| taken.contains(&n)), "a (3).mp3");
     assert_eq!(unique_file_name("b", "mp3", |n| taken.contains(&n)), "b.mp3");
-  }
-
-  #[test]
-  fn tags_need_title_and_artist() {
-    assert_eq!(SongTags::new(" ", "x", None, None), Err(DownloadError::TitleEmpty));
-    assert_eq!(SongTags::new("x", "", None, None), Err(DownloadError::ArtistEmpty));
-    assert_eq!(SongTags::new("x", "y", Some("  "), None).unwrap().album(), None);
-    assert_eq!(SongTags::new("x", "y", None, Some(99)), Err(DownloadError::YearInvalid));
-    assert_eq!(SongTags::new("x", "y", None, Some(1993)).unwrap().year(), Some(1993));
   }
 
   #[test]

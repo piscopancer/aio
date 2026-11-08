@@ -33,25 +33,6 @@ function stagePercent(stage: DownloadStage) {
   }
 }
 
-function stageText(stage: DownloadStage) {
-  switch (stage.kind) {
-    case 'queued':
-      return 'Waiting'
-    case 'downloading':
-      return `Downloading ${stage.percent}%`
-    case 'converting':
-      return 'Converting'
-    case 'tagging':
-      return 'Adding tags and cover'
-    case 'done':
-      return 'Added to your library'
-    case 'failed':
-      return errorMessage(stage.error)
-    default:
-      return stage satisfies never
-  }
-}
-
 /** Toolbar button listing the downloads of this session; a ring around it fills while any of them runs. */
 export function DownloadsButton(props: Omit<ComponentProps<typeof Button>, 'children'>) {
   const { data: downloads = [] } = useQuery(queries.downloads())
@@ -95,52 +76,51 @@ export function DownloadsButton(props: Omit<ComponentProps<typeof Button>, 'chil
 
 function DownloadRow({ download }: { download: DownloadView }) {
   const dismiss = useMutation(mutations.dismissDownload())
+  const cancel = useMutation(mutations.cancelDownload())
   const { stage } = download
+  const active = isActive(stage)
   return (
     <li className="group flex items-center gap-3 rounded-md p-2 hover:bg-surface-hover">
       <SourceCover source={download.cover} className="size-10 rounded-sm" />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="truncate text-sm">{download.title}</span>
-        <span
-          className={cn('truncate text-xs text-muted-foreground', stage.kind === 'failed' && 'text-destructive')}
-          title={stage.kind === 'failed' ? stageText(stage) : download.folder}
-        >
-          {download.artist} • {stageText(stage)}
-        </span>
-        {isActive(stage) && (
-          <div className="h-1 overflow-hidden rounded-full bg-foreground/20">
-            <div className="h-full bg-primary transition-[width]" style={{ width: `${stagePercent(stage)}%` }} />
-          </div>
-        )}
+        <Hint label={stage.kind === 'failed' ? errorMessage(stage.error) : download.folder}>
+          <span className={cn('truncate text-xs text-muted-foreground', stage.kind === 'failed' && 'text-destructive')}>
+            {download.artist}
+          </span>
+        </Hint>
       </div>
-      {!isActive(stage) && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`Remove ${download.title} from the list`}
-          className="opacity-0 group-hover:opacity-100"
-          onClick={() => dismiss.mutate(download.id)}
-        >
-          <XIcon />
-        </Button>
+      {active && (
+        <div className="relative size-6 shrink-0">
+          <ProgressRing percent={stagePercent(stage)} thickness={3} />
+        </div>
       )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label={active ? `Cancel downloading ${download.title}` : `Remove ${download.title} from the list`}
+        className={cn(!active && 'opacity-0 group-hover:opacity-100')}
+        onClick={() => (active ? cancel : dismiss).mutate(download.id)}
+      >
+        <XIcon />
+      </Button>
     </li>
   )
 }
 
-/** Circle drawn around the button, filled clockwise to `percent`. */
-function ProgressRing({ percent }: { percent: number }) {
-  const radius = 17
+/** Circle filling its positioned parent, filled clockwise to `percent`; `thickness` is in 36ths of its size. */
+function ProgressRing({ percent, thickness = 2 }: { percent: number; thickness?: number }) {
+  const radius = 18 - thickness / 2
   const circumference = 2 * Math.PI * radius
   return (
     <svg viewBox="0 0 36 36" className="pointer-events-none absolute inset-0 size-full -rotate-90">
-      <circle cx="18" cy="18" r={radius} fill="none" strokeWidth="2" className="stroke-foreground/15" />
+      <circle cx="18" cy="18" r={radius} fill="none" strokeWidth={thickness} className="stroke-foreground/15" />
       <circle
         cx="18"
         cy="18"
         r={radius}
         fill="none"
-        strokeWidth="2"
+        strokeWidth={thickness}
         strokeLinecap="round"
         strokeDasharray={circumference}
         strokeDashoffset={circumference * (1 - percent / 100)}

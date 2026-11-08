@@ -1,10 +1,12 @@
-/** Golden angle in degrees, so neighbouring ids land on clearly different hues. */
-const GOLDEN_ANGLE = 137.5
+/** Header colour of a page without cover art, a plain dark grey. */
+export const neutralTint = 'oklch(0.4 0 0)'
 
-/** Header colour of a page: a stable hue derived from the entity id. */
-export function tint(seed: number) {
-  return `oklch(0.46 0.1 ${(seed * GOLDEN_ANGLE) % 360})`
-}
+/** Lightness range a header glow is held in: dark covers are lifted so they still glow, light ones capped so white titles stay readable. */
+const GLOW_LIGHTNESS = { min: 0.45, max: 0.7 } as const
 
-/** Header colour of pages that show the whole library, a darker shade of the accent. */
-export const libraryTint = 'oklch(0.5 0.09 62)'
+/** Header glow of a cover colour: the colour itself, with its lightness held in `GLOW_LIGHTNESS`. */
+export const glowOf = (color: string) =>
+  `oklch(from ${color} clamp(${GLOW_LIGHTNESS.min}, l, ${GLOW_LIGHTNESS.max}) c h)`
+
+/** Header colour of pages that show the whole library, whose cover is the accent: its glow, as a cover of that colour would give. */
+export const libraryTint = glowOf('var(--primary)')

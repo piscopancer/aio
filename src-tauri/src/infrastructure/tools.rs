@@ -4,7 +4,7 @@
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use crate::application::error::{AppError, AppResult};
@@ -224,6 +224,16 @@ pub fn command(program: &Path) -> Command {
     command.creation_flags(CREATE_NO_WINDOW);
   }
   command
+}
+
+/// Stops a tool together with the processes it started, such as the ffmpeg yt-dlp runs.
+pub fn kill_tree(child: &mut Child) {
+  #[cfg(windows)]
+  {
+    let pid = child.id().to_string();
+    let _ = command(Path::new("taskkill")).args(["/T", "/F", "/PID", &pid]).status();
+  }
+  let _ = child.kill();
 }
 
 /// The most telling line a failed tool printed: its last "ERROR:" line, else its last line.

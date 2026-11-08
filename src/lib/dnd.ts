@@ -14,6 +14,18 @@ export function carriesTrack(event: DragEvent) {
   return event.dataTransfer.types.includes(TRACK_MIME)
 }
 
+/** Drag payload type of a pinned item being moved among the pinned of its list; the list itself knows which one. */
+const PIN_MIME = 'application/x-aio-pin'
+
+export function startPinDrag(event: DragEvent) {
+  event.dataTransfer.setData(PIN_MIME, '')
+  event.dataTransfer.effectAllowed = 'move'
+}
+
+export function carriesPin(event: DragEvent) {
+  return event.dataTransfer.types.includes(PIN_MIME)
+}
+
 export function droppedTrack(event: DragEvent) {
   const id = Number(event.dataTransfer.getData(TRACK_MIME))
   return Number.isSafeInteger(id) && id > 0 ? id : undefined

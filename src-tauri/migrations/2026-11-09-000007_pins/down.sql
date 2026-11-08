@@ -1,0 +1,3 @@
+ALTER TABLE playlists DROP COLUMN pin;
+ALTER TABLE albums DROP COLUMN pin;
+ALTER TABLE artists DROP COLUMN pin;

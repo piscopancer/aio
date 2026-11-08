@@ -1,15 +1,22 @@
 //! What the use cases need from the outside world; infrastructure and interface implement these.
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+
+use serde::Deserialize;
+use specta::Type;
 
 use super::error::AppResult;
 use super::views::*;
-use crate::domain::download::{AudioQuality, Candidate, SongTags, VideoFacts};
+use crate::domain::artists::Artists;
+use crate::domain::download::{AudioQuality, Candidate, VideoFacts};
 use crate::domain::ids::{AlbumId, ArtistId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
+use crate::domain::pins::{PinKind, Pins};
 use crate::domain::playback::{PlaybackContext, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
+use crate::domain::tags::SongTags;
 
 pub trait FolderRepository: Send + Sync {
   fn load_folders(&self) -> AppResult<LibraryFolders>;
@@ -22,9 +29,18 @@ pub trait PlaylistRepository: Send + Sync {
   fn load_playlist(&self, id: PlaylistId) -> AppResult<PlaylistAggregate>;
   fn save_playlist(&self, playlist: &PlaylistAggregate) -> AppResult<()>;
   fn delete_playlist(&self, id: PlaylistId) -> AppResult<()>;
+  /// Notes that playback started from the playlist at `at`, in Unix seconds.
+  fn mark_playlist_played(&self, id: PlaylistId, at: i64) -> AppResult<()>;
 }
 
 /// Images the user picks for the app's own artwork.
+/// Where the pins of each kind are kept.
+pub trait PinStore: Send + Sync {
+  fn load_pins(&self, kind: PinKind) -> AppResult<Pins>;
+  /// Saves the pins of `kind` in their order; ids no longer in the library are skipped.
+  fn save_pins(&self, kind: PinKind, pins: &Pins) -> AppResult<()>;
+}
+
 pub trait CoverImages: Send + Sync {
   /// Copies the image at `file` into the app's covers as a square, returning the stored copy's path.
   fn import(&self, file: &Path) -> AppResult<String>;
@@ -36,8 +52,9 @@ pub trait CoverImages: Send + Sync {
 pub struct ScannedTrack {
   pub path: String,
   pub title: String,
-  pub artist: String,
+  pub artists: Artists,
   pub album: String,
+  /// The album artist the file names, or else its main artist.
   pub album_artist: String,
   pub year: Option<u32>,
   pub track_no: Option<u32>,
@@ -61,6 +78,34 @@ pub trait TrackIndex: Send + Sync {
   fn drop_files(&self, paths: &[String]) -> AppResult<()>;
   /// Id of the indexed track stored at `path`.
   fn track_at(&self, path: &str) -> AppResult<TrackId>;
+  /// Re-indexes files already in the library after their tags were rewritten; their albums take the cover and year
+  /// the files now carry, even over ones they had.
+  fn retag_tracks(&self, tracks: &[ScannedTrack]) -> AppResult<()>;
+}
+
+/// What happens to the front cover of a song file.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CoverChange {
+  Keep,
+  /// The image file at `path` becomes the cover.
+  Set {
+    path: String,
+  },
+  Remove,
+}
+
+/// Reading and rewriting the tags of single song files.
+pub trait SongFiles: Send + Sync {
+  fn tags(&self, path: &Path) -> AppResult<TrackTags>;
+  /// Writes every song tag and changes the cover.
+  fn write_song(&self, path: &Path, tags: &SongTags, cover: &CoverChange) -> AppResult<()>;
+  /// Writes only what belongs to the album, the year and the cover, leaving the song's own tags alone.
+  fn write_album_art(&self, path: &Path, year: Option<u16>, cover: &CoverChange) -> AppResult<()>;
+  /// The lyrics the file holds in its tags, or else in a `.lrc` file beside it; blank text counts as none.
+  fn lyrics(&self, path: &Path) -> AppResult<Option<String>>;
+  /// Writes LRC or plain text into the file's lyrics tag.
+  fn write_lyrics(&self, path: &Path, text: &str) -> AppResult<()>;
 }
 
 pub trait AudioFiles: Send + Sync {
@@ -89,7 +134,7 @@ pub trait LibraryQueries: Send + Sync {
       PlaybackContext::Songs => self.tracks(),
       PlaybackContext::Album { id } => Ok(self.album(id)?.tracks),
       PlaybackContext::Artist { id } => Ok(self.artist(id)?.tracks),
-      PlaybackContext::Playlist { id } => Ok(self.playlist(id)?.tracks),
+      PlaybackContext::Playlist { id } => Ok(self.playlist(id)?.tracks.into_iter().filter(|t| !t.missing).collect()),
       PlaybackContext::Folder { id } => Ok(self.folder(id)?.tracks),
     }
   }
@@ -172,6 +217,8 @@ pub struct FetchJob<'a> {
   pub video_url: &'a str,
   pub quality: AudioQuality,
   pub target: &'a Path,
+  /// Set when the user cancels; the fetch then stops the tool, removes what it wrote and fails.
+  pub cancelled: &'a AtomicBool,
 }
 
 /// Steps of a fetch that the caller shows.
@@ -198,4 +245,55 @@ pub trait DownloadTools: Send + Sync {
   fn install_missing(&self, progress: &mut dyn FnMut(ToolInstall)) -> AppResult<()>;
   /// Brings the site extractor up to date; sites change often enough to break older versions.
   fn update(&self) -> AppResult<()>;
+}
+
+/// What a song is looked up by on a lyrics site.
+pub struct LyricsQuery<'a> {
+  pub title: &'a str,
+  pub artist: Option<&'a str>,
+  pub album: Option<&'a str>,
+  pub duration_ms: u32,
+}
+
+/// What a lookup of lyrics ended with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LyricsFind {
+  Text { text: String, origin: LyricsOrigin },
+  Instrumental,
+  Missing,
+}
+
+/// Lyrics a site has for a song, and the length of the recording they are timed for.
+pub struct OnlineLyrics {
+  pub find: LyricsFind,
+  pub length_ms: u32,
+}
+
+pub trait LyricsFinder: Send + Sync {
+  fn find(&self, song: &LyricsQuery<'_>) -> AppResult<Option<OnlineLyrics>>;
+}
+
+/// What Aio knows about a song's lyrics beyond its file: where they came from, the length they were timed for,
+/// whether the file holds them yet, and when they were last looked up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LyricsRecord {
+  pub find: LyricsFind,
+  pub length_ms: u32,
+  pub in_file: bool,
+  /// Unix seconds.
+  pub checked_at: i64,
+}
+
+/// Found lyrics still waiting to be written into their song file.
+pub struct UnwrittenLyrics {
+  pub track: TrackId,
+  pub path: String,
+  pub text: String,
+}
+
+pub trait LyricsStore: Send + Sync {
+  fn lyrics_record(&self, track: TrackId) -> AppResult<Option<LyricsRecord>>;
+  fn save_lyrics_record(&self, track: TrackId, record: &LyricsRecord) -> AppResult<()>;
+  fn unwritten_lyrics(&self) -> AppResult<Vec<UnwrittenLyrics>>;
+  fn mark_lyrics_written(&self, track: TrackId) -> AppResult<()>;
 }

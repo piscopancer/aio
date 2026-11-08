@@ -1,12 +1,13 @@
 import { XIcon } from 'lucide-react'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { QueueItem } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { Equalizer } from '@/components/equalizer'
 import { Hint } from '@/components/hint'
 import { Button } from '@/components/ui/button'
-import { toggleQueue } from '@/lib/layout'
+import { togglePanel } from '@/lib/layout'
 import { currentItem, player, usePlayer } from '@/lib/player'
+import { credit } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useListVirtualizer } from '@/lib/virtual'
 
@@ -27,7 +28,7 @@ export function QueuePanel() {
         <header className="sticky top-0 z-10 flex items-center justify-between bg-surface px-4 py-3">
           <h2 className="font-bold">Queue</h2>
           <Hint label="Close">
-            <Button variant="ghost" size="icon" className="hover:bg-surface-hover" onClick={toggleQueue}>
+            <Button variant="ghost" size="icon" className="hover:bg-surface-hover" onClick={() => togglePanel('queue')}>
               <XIcon />
             </Button>
           </Hint>
@@ -63,7 +64,8 @@ export function QueuePanel() {
   )
 }
 
-function QueueRow({ item, current = false }: { item: QueueItem; current?: boolean }) {
+/** One queue entry; memoized, so scrolling the panel only moves rows instead of rendering them again. */
+const QueueRow = memo(function QueueRow({ item, current = false }: { item: QueueItem; current?: boolean }) {
   const isPlaying = usePlayer((state) => current && state.isPlaying)
   const { track } = item
   return (
@@ -75,7 +77,7 @@ function QueueRow({ item, current = false }: { item: QueueItem; current?: boolea
       <Cover src={track.cover} kind="track" className="size-12" />
       <div className="flex min-w-0 flex-1 flex-col">
         <span className={cn('truncate', current && 'text-primary')}>{track.title}</span>
-        <span className="truncate text-sm text-muted-foreground">{track.artist}</span>
+        <span className="truncate text-sm text-muted-foreground">{credit(track.artists)}</span>
       </div>
       {isPlaying && <Equalizer className="mr-2" />}
       {!current && (
@@ -92,4 +94,4 @@ function QueueRow({ item, current = false }: { item: QueueItem; current?: boolea
       )}
     </div>
   )
-}
+})

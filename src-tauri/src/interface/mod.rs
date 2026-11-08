@@ -3,3 +3,5 @@
 pub mod cli;
 pub mod commands;
 pub mod events;
+#[cfg(windows)]
+pub mod taskbar;

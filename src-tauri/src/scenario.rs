@@ -8,6 +8,7 @@ use crate::application::error::AppResult;
 use crate::application::playback::{PlayerCommand, PlayerHandle};
 use crate::application::playlists::PlaylistService;
 use crate::application::ports::{FolderRepository, LibraryQueries, ScannedTrack, TrackIndex};
+use crate::domain::artists::Artists;
 use crate::domain::ids::TrackId;
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::playback::{PlaybackContext, RepeatMode};
@@ -100,7 +101,7 @@ pub fn seed(
         tracks.push(ScannedTrack {
           path: format!("{FIXTURE_PREFIX}{}", tracks.len()),
           title: phrase(&mut rng, 4),
-          artist: artist.clone(),
+          artists: Artists::new([&artist])?,
           album: album.clone(),
           album_artist: artist.clone(),
           year: Some(year),
@@ -140,7 +141,7 @@ pub fn start(scenario: Scenario, player: &PlayerHandle, queries: &dyn LibraryQue
     return Ok(());
   };
   player.send(PlayerCommand::SetShuffle(false));
-  player.play(queries, PlaybackContext::Album { id: album.id }, Some(track.id))?;
+  player.play(queries, PlaybackContext::Album { id: album.id }, Some(track.id), None)?;
   player.send(PlayerCommand::SetShuffle(true));
   player.send(PlayerCommand::SetRepeat(RepeatMode::All));
   player.send(PlayerCommand::Seek(track.duration_ms / 2));

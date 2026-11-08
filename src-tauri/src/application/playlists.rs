@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::downloads::now;
 use super::error::AppResult;
 use super::ports::PlaylistRepository;
 use crate::domain::ids::{PlaylistId, TrackId};
@@ -27,6 +28,11 @@ impl PlaylistService {
     playlist.rename(name);
     playlist.change_cover(cover);
     self.playlists.save_playlist(&playlist)
+  }
+
+  /// Remembers that playback just started from the playlist, which orders it among the recently played.
+  pub fn played(&self, id: PlaylistId) -> AppResult<()> {
+    self.playlists.mark_playlist_played(id, now())
   }
 
   pub fn delete(&self, id: PlaylistId) -> AppResult<()> {

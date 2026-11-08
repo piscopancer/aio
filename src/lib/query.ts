@@ -1,4 +1,5 @@
 import { MutationCache, QueryCache, QueryClient, mutationOptions, queryOptions } from '@tanstack/react-query'
+import { getVersion } from '@tauri-apps/api/app'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { toast } from 'sonner'
 import {
@@ -7,9 +8,11 @@ import {
   type DownloadId,
   type DownloadRequest,
   type FolderId,
+  type PinTarget,
   type Playlist,
   type PlaylistDetail,
   type PlaylistId,
+  type TrackEdit,
   type TrackId,
   commands,
 } from '@/bindings'
@@ -43,6 +46,7 @@ const roots = {
 } as const
 
 export const queries = {
+  appVersion: () => queryOptions({ queryKey: ['appVersion'], queryFn: () => getVersion() }),
   scenario: () => queryOptions({ queryKey: ['scenario'], queryFn: () => commands.getScenario() }),
   folders: () =>
     queryOptions({ queryKey: [...roots.library, 'folders'], queryFn: () => unwrap(commands.listFolders()) }),
@@ -95,6 +99,23 @@ export const queries = {
       queryFn: () => (file === null ? null : unwrap(commands.coverColor(file))),
       meta: { inline: true },
     }),
+  /** Lyrics of a song; finding them once is enough, as they only ever move from LRCLIB into the file. */
+  lyrics: (id: TrackId) =>
+    queryOptions({
+      queryKey: ['lyrics', id],
+      queryFn: () => unwrap(commands.trackLyrics(id)),
+      staleTime: Infinity,
+      retry: false,
+      meta: { inline: true },
+    }),
+  /** Tags of a song file for the edit dialog, read afresh each time it opens. */
+  trackTags: (id: TrackId) =>
+    queryOptions({
+      queryKey: [...roots.library, 'tags', id],
+      queryFn: () => unwrap(commands.trackTags(id)),
+      staleTime: 0,
+      meta: { inline: true },
+    }),
   downloadPreview: (link: string) =>
     queryOptions({
       queryKey: [...roots.downloads, 'preview', link],
@@ -108,7 +129,8 @@ export function invalidateLibrary() {
   return queryClient.invalidateQueries({ queryKey: roots.library })
 }
 
-function invalidatePlaylists() {
+/** Refetches the playlists, as after one of them changed or was played. */
+export function invalidatePlaylists() {
   return queryClient.invalidateQueries({ queryKey: roots.playlists })
 }
 
@@ -131,6 +153,7 @@ export const mutations = {
       onSuccess: (_, { title }) => toast(`Downloading ${title}`),
     }),
   dismissDownload: () => mutationOptions({ mutationFn: (id: DownloadId) => commands.dismissDownload(id) }),
+  cancelDownload: () => mutationOptions({ mutationFn: (id: DownloadId) => commands.cancelDownload(id) }),
   createPlaylist: () =>
     mutationOptions({
       mutationFn: ({ name, ownCover }: Pick<Playlist, 'name' | 'ownCover'>) =>
@@ -145,10 +168,51 @@ export const mutations = {
     }),
   /** Stores a square copy of a picked image file and resolves to the copy's path, ready to become a cover. */
   importCover: () => mutationOptions({ mutationFn: (file: string) => unwrap(commands.importCover(file)) }),
+  editTrack: () =>
+    mutationOptions({
+      mutationFn: ({ id, edit }: { id: TrackId; edit: TrackEdit }) => unwrap(commands.editTrack(id, edit)),
+      onSuccess: (_, { edit }) => toast.success(`Saved ${edit.title.trim() || 'the song'}`),
+      onSettled: invalidateLibrary,
+    }),
   deletePlaylist: () =>
     mutationOptions({
       mutationFn: (id: PlaylistId) => unwrap(commands.deletePlaylist(id)),
       onSettled: invalidatePlaylists,
+    }),
+  pin: () =>
+    mutationOptions({ mutationFn: (target: PinTarget) => unwrap(commands.pin(target)), onSettled: invalidateLibrary }),
+  unpin: () =>
+    mutationOptions({
+      mutationFn: (target: PinTarget) => unwrap(commands.unpin(target)),
+      onSettled: invalidateLibrary,
+    }),
+  /** Moves a pin optimistically, so the dropped item does not jump back while the backend saves. */
+  movePin: () =>
+    mutationOptions({
+      mutationFn: ({ target, to }: { target: PinTarget; to: number }) => unwrap(commands.movePin(target, to)),
+      onMutate: async ({ target, to }) => {
+        await queryClient.cancelQueries({ queryKey: roots.library })
+        switch (target.kind) {
+          case 'playlist':
+            return void queryClient.setQueryData(
+              queries.playlists().queryKey,
+              (list) => list && repin(list, target.id, to),
+            )
+          case 'album':
+            return void queryClient.setQueryData(
+              queries.albums().queryKey,
+              (list) => list && repin(list, target.id, to),
+            )
+          case 'artist':
+            return void queryClient.setQueryData(
+              queries.artists().queryKey,
+              (list) => list && repin(list, target.id, to),
+            )
+          default:
+            return target satisfies never
+        }
+      },
+      onSettled: invalidateLibrary,
     }),
   /** Adds tracks the playlist lacks and tells how many it already had. */
   addToPlaylist: () =>
@@ -180,6 +244,16 @@ export const mutations = {
       },
       onSettled: invalidatePlaylists,
     }),
+}
+
+/** Same move the pins make: take the item out of the pinned order, then insert it at `to` of the rest. */
+function repin<const T extends { id: number; pin: number | null }>(list: T[], id: number, to: number) {
+  const order = list
+    .filter((item) => item.pin !== null && item.id !== id)
+    .toSorted((a, b) => (a.pin ?? 0) - (b.pin ?? 0))
+    .map((item) => item.id)
+  order.splice(to, 0, id)
+  return list.map((item) => (item.pin === null && item.id !== id ? item : { ...item, pin: order.indexOf(item.id) }))
 }
 
 /** Same move the playlist aggregate makes: take the track out, then insert it at `to` of the remaining order. */

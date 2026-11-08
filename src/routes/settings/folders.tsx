@@ -2,8 +2,20 @@ import { useMutation, useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderIcon, FolderPlusIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
+import { useState } from 'react'
+import type { Folder } from '@/bindings'
 import { Hint } from '@/components/hint'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { useScan } from '@/lib/backend'
 import { plural } from '@/lib/format'
 import { mutations, queries } from '@/lib/query'
@@ -16,7 +28,7 @@ export const Route = createFileRoute('/settings/folders')({
 function Folders() {
   const { data: folders } = useSuspenseQuery(queries.folders())
   const addFolder = useMutation(mutations.addFolder())
-  const removeFolder = useMutation(mutations.removeFolder())
+  const [removing, setRemoving] = useState<Folder | null>(null)
   const scan = useMutation(mutations.scan())
   const busy = addFolder.isPending || scan.isPending
 
@@ -46,7 +58,7 @@ function Folders() {
         </Button>
       </div>
       <ScanStatus />
-      <ul className="flex flex-col">
+      <ul className="flex flex-col gap-1">
         {folders.map((folder) => (
           <li key={folder.id} className="group flex items-center gap-4 rounded-md p-3 hover:bg-surface-hover">
             <Link
@@ -66,7 +78,7 @@ function Folders() {
                 size="icon"
                 disabled={busy}
                 className="opacity-0 group-hover:opacity-100"
-                onClick={() => removeFolder.mutate(folder.path)}
+                onClick={() => setRemoving(folder)}
               >
                 <Trash2Icon />
               </Button>
@@ -74,7 +86,40 @@ function Folders() {
           </li>
         ))}
       </ul>
+      <Dialog open={removing !== null} onOpenChange={() => setRemoving(null)}>
+        {removing !== null && <RemoveConfirmation folder={removing} onDone={() => setRemoving(null)} />}
+      </Dialog>
     </div>
+  )
+}
+
+function RemoveConfirmation({ folder, onDone }: { folder: Folder; onDone: () => void }) {
+  const removeFolder = useMutation(mutations.removeFolder())
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Remove folder?</DialogTitle>
+      </DialogHeader>
+      <DialogBody>
+        <DialogDescription>
+          <span className="font-semibold break-all text-foreground">{folder.path}</span> and its{' '}
+          {plural(folder.trackCount, 'song')} leave the library. The files on disk stay where they are, and songs of
+          this folder in your playlists show as missing until you add the folder back.
+        </DialogDescription>
+      </DialogBody>
+      <DialogFooter>
+        <DialogClose asChild>
+          <Button variant="ghost">Cancel</Button>
+        </DialogClose>
+        <Button
+          variant="destructive"
+          disabled={removeFolder.isPending}
+          onClick={() => removeFolder.mutate(folder.path, { onSuccess: onDone })}
+        >
+          Remove
+        </Button>
+      </DialogFooter>
+    </DialogContent>
   )
 }
 

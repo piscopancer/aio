@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,10 +10,10 @@ use super::library::LibraryService;
 use super::playlists::PlaylistService;
 use super::ports::{DownloadSettingsStore, DownloadTools, FetchJob, FetchProgress, MediaSource, Notifier};
 use super::views::*;
-use crate::domain::download::{
-  AudioQuality, Candidate, SongLink, SongTags, closest_match, guess_tags, unique_file_name,
-};
+use crate::domain::artists::Artists;
+use crate::domain::download::{AudioQuality, Candidate, SongLink, closest_match, guess_tags, unique_file_name};
 use crate::domain::ids::{DownloadId, PlaylistId};
+use crate::domain::tags::SongTags;
 
 /// How long a check for newer download tools counts as fresh.
 const UPDATE_EVERY_SECS: i64 = 24 * 60 * 60;
@@ -26,7 +27,7 @@ pub struct DownloadRequest {
   pub video_url: String,
   pub cover: Option<CoverSource>,
   pub title: String,
-  pub artist: String,
+  pub artists: Vec<String>,
   pub album: Option<String>,
   pub year: Option<u16>,
   pub quality: AudioQuality,
@@ -46,6 +47,8 @@ pub struct DownloadService {
   /// The system Music folder, the default target.
   music_dir: PathBuf,
   downloads: Mutex<Vec<DownloadView>>,
+  /// The cancel flag of each download still running.
+  cancels: Mutex<HashMap<DownloadId, Arc<AtomicBool>>>,
   tools_view: Mutex<ToolsView>,
   /// Held while tools are installed or updated, so two dialogs never fetch the same tool at once.
   tools_busy: Mutex<()>,
@@ -71,6 +74,7 @@ impl DownloadService {
       notifier,
       music_dir,
       downloads: Mutex::new(Vec::new()),
+      cancels: Mutex::new(HashMap::new()),
       tools_view: Mutex::new(ToolsView::default()),
       tools_busy: Mutex::new(()),
       next_id: AtomicU32::new(1),
@@ -177,7 +181,10 @@ impl DownloadService {
         cover_url: video.thumbnail,
         duration_ms: video.duration_ms,
         title,
-        artist,
+        // a video names its artists in one line, which splits like a file's artist tag
+        artists: Artists::parse(&artist)
+          .map(|artists| artists.names().to_vec())
+          .unwrap_or_default(),
         album,
         year: video.year,
         qualities: qualities(video.original_kbps, video.duration_ms),
@@ -194,7 +201,7 @@ impl DownloadService {
         cover_url: track.cover.or(video.thumbnail),
         duration_ms: track.duration_ms,
         title: track.title,
-        artist: track.artists.join(", "),
+        artists: track.artists,
         album: track.album.or(video.facts.album),
         year: track.year.or(video.year),
         qualities: qualities(video.original_kbps, video.duration_ms),
@@ -215,7 +222,12 @@ impl DownloadService {
         "the song must be matched to a YouTube video first".into(),
       ));
     }
-    let tags = SongTags::new(&request.title, &request.artist, request.album.as_deref(), request.year)?;
+    let tags = SongTags::new(
+      &request.title,
+      Artists::new(&request.artists)?,
+      request.album.as_deref(),
+      request.year,
+    )?;
     let folder = self.target_folder(request.folder.as_deref());
     // fails early when the folder can never join the library
     if let FolderCheck::Overlaps { existing, .. } = self.library.check_folder(&folder)? {
@@ -225,23 +237,41 @@ impl DownloadService {
     self.update(|downloads| {
       downloads.push(DownloadView {
         id,
-        title: tags.title().to_owned(),
-        artist: tags.artist().to_owned(),
+        // a new song always has both, `SongTags::new` sees to it
+        title: tags.title().unwrap_or_default().to_owned(),
+        artist: tags.artists().map(Artists::credit).unwrap_or_default(),
         cover: request.cover.clone(),
         folder: folder.to_string_lossy().into_owned(),
         stage: DownloadStage::Queued,
       });
     });
+    let cancelled = Arc::new(AtomicBool::new(false));
+    lock(&self.cancels).insert(id, cancelled.clone());
     let service = self.clone();
     let url = song.url();
     thread::spawn(move || {
-      let stage = match service.run(id, &url, &tags, &request, &folder) {
-        Ok(track_id) => DownloadStage::Done { track_id },
-        Err(error) => DownloadStage::Failed { error },
-      };
-      service.set_stage(id, stage);
+      let result = service.run(id, &url, &tags, &request, &folder, &cancelled);
+      lock(&service.cancels).remove(&id);
+      // a cancelled download has already left the list
+      if !cancelled.load(Ordering::Relaxed) {
+        service.set_stage(
+          id,
+          match result {
+            Ok(track_id) => DownloadStage::Done { track_id },
+            Err(error) => DownloadStage::Failed { error },
+          },
+        );
+      }
     });
     Ok(id)
+  }
+
+  /// Stops a running download, removes what it wrote so far and takes it off the list.
+  pub fn cancel(&self, id: DownloadId) {
+    if let Some(cancelled) = lock(&self.cancels).get(&id) {
+      cancelled.store(true, Ordering::Relaxed);
+    }
+    self.update(|downloads| downloads.retain(|d| d.id != id));
   }
 
   /// Removes a finished or failed download from the list.
@@ -258,6 +288,7 @@ impl DownloadService {
     tags: &SongTags,
     request: &DownloadRequest,
     folder: &Path,
+    cancelled: &AtomicBool,
   ) -> AppResult<crate::domain::ids::TrackId> {
     self.install_missing()?;
     std::fs::create_dir_all(folder).map_err(|e| AppError::Fetch(format!("cannot create {}: {e}", folder.display())))?;
@@ -269,14 +300,22 @@ impl DownloadService {
       video_url: url,
       quality: request.quality,
       target: &target,
+      cancelled,
     };
     if let Err(first) = self.fetch(id, &job) {
+      if cancelled.load(Ordering::Relaxed) {
+        return Err(first);
+      }
       // an outdated extractor is the usual reason; update it and try once more
       eprintln!("download failed, updating yt-dlp and retrying: {first}");
       if self.update_tools().is_err() {
         return Err(first);
       }
       self.fetch(id, &job)?;
+    }
+    if cancelled.load(Ordering::Relaxed) {
+      let _ = std::fs::remove_file(&target);
+      return Err(AppError::Fetch("the download was cancelled".into()));
     }
     self.set_stage(id, DownloadStage::Tagging);
     self.media.write_tags(&target, tags, request.cover.as_ref())?;
@@ -340,7 +379,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
   mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn now() -> i64 {
+/// Unix seconds now.
+pub fn now() -> i64 {
   SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))

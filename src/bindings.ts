@@ -29,14 +29,23 @@ export const commands = {
   importCover: (file: string) => typedError<string, AppError>(__TAURI_INVOKE("import_cover", { file })),
   /**  The colour that covers most of the image at `file`, as `#rrggbb`, which pages tint their header with. */
   coverColor: (file: string) => typedError<string, AppError>(__TAURI_INVOKE("cover_color", { file })),
+  /**  Tags of a song as the edit dialog shows them. */
+  trackTags: (id: TrackId) => typedError<TrackTags, AppError>(__TAURI_INVOKE("track_tags", { id })),
+  /**  Rewrites a song's tags; a playing song resumes where it was once its file is written. */
+  editTrack: (id: TrackId, edit: TrackEdit) => typedError<null, AppError>(__TAURI_INVOKE("edit_track", { id, edit })),
   deletePlaylist: (id: PlaylistId) => typedError<null, AppError>(__TAURI_INVOKE("delete_playlist", { id })),
+  /**  Pins a playlist, album or artist first among the pinned of its list. */
+  pin: (target: PinTarget) => typedError<null, AppError>(__TAURI_INVOKE("pin", { target })),
+  unpin: (target: PinTarget) => typedError<null, AppError>(__TAURI_INVOKE("unpin", { target })),
+  /**  Moves a pinned item to place `to` among the pinned of its list. */
+  movePin: (target: PinTarget, to: number) => typedError<null, AppError>(__TAURI_INVOKE("move_pin", { target, to })),
   /**  Appends tracks the playlist does not have yet and reports how many were skipped as already present. */
   addToPlaylist: (id: PlaylistId, trackIds: TrackId[]) => typedError<AddOutcome, AppError>(__TAURI_INVOKE("add_to_playlist", { id, trackIds })),
   removeFromPlaylist: (id: PlaylistId, trackIds: TrackId[]) => typedError<null, AppError>(__TAURI_INVOKE("remove_from_playlist", { id, trackIds })),
   movePlaylistTrack: (id: PlaylistId, trackId: TrackId, to: number) => typedError<null, AppError>(__TAURI_INVOKE("move_playlist_track", { id, trackId, to })),
   getPlayerState: () => __TAURI_INVOKE<PlayerState>("get_player_state"),
-  /**  Plays a view's tracks in its order, starting at `start_track_id` or at the first track. */
-  play: (context: PlaybackContext, startTrackId: TrackId | null) => typedError<null, AppError>(__TAURI_INVOKE("play", { context, startTrackId })),
+  /**  Plays a view's tracks in its order, or in `order` when the view is sorted, starting at `start_track_id` or at the first track. */
+  play: (context: PlaybackContext, startTrackId: TrackId | null, order: TrackId[] | null) => typedError<null, AppError>(__TAURI_INVOKE("play", { context, startTrackId, order })),
   enqueueTracks: (trackIds: TrackId[]) => typedError<null, AppError>(__TAURI_INVOKE("enqueue_tracks", { trackIds })),
   playQueueEntry: (key: QueueKey) => __TAURI_INVOKE<void>("play_queue_entry", { key }),
   removeFromQueue: (key: QueueKey) => __TAURI_INVOKE<void>("remove_from_queue", { key }),
@@ -45,6 +54,7 @@ export const commands = {
   previousTrack: () => __TAURI_INVOKE<void>("previous_track"),
   seek: (positionMs: number) => __TAURI_INVOKE<void>("seek", { positionMs }),
   setVolume: (volume: number) => typedError<null, AppError>(__TAURI_INVOKE("set_volume", { volume })),
+  setMuted: (muted: boolean) => __TAURI_INVOKE<void>("set_muted", { muted }),
   setShuffle: (shuffle: boolean) => __TAURI_INVOKE<void>("set_shuffle", { shuffle }),
   setRepeat: (repeat: RepeatMode) => __TAURI_INVOKE<void>("set_repeat", { repeat }),
   getDownloadSettings: () => __TAURI_INVOKE<DownloadSettingsView>("get_download_settings"),
@@ -61,6 +71,9 @@ export const commands = {
   startDownload: (request: DownloadRequest) => typedError<DownloadId, AppError>(__TAURI_INVOKE("start_download", { request })),
   listDownloads: () => __TAURI_INVOKE<DownloadView[]>("list_downloads"),
   dismissDownload: (id: DownloadId) => __TAURI_INVOKE<void>("dismiss_download", { id }),
+  /**  Lyrics of a song, from its file or else looked up on LRCLIB. */
+  trackLyrics: (id: TrackId) => typedError<LyricsView, AppError>(__TAURI_INVOKE("track_lyrics", { id })),
+  cancelDownload: (id: DownloadId) => __TAURI_INVOKE<void>("cancel_download", { id }),
 };
 
 /** Events */
@@ -76,6 +89,12 @@ export const events = {
 
 /* Constants */
 export const PLAYLIST_NAME_MAX_CHARS = 100 as const;
+
+export const TRACK_NUMBER_MAX = 999 as const;
+
+export const UNKNOWN_ALBUM = "Unknown Album" as const;
+
+export const UNKNOWN_ARTIST = "Unknown Artist" as const;
 
 export const VOLUME_MAX = 100 as const;
 
@@ -95,6 +114,8 @@ export type Album = {
   cover: string | null,
   trackCount: number,
   durationMs: number,
+  /**  Place among the pinned of its list, the first being 0; none when it is not pinned. */
+  pin: number | null,
 };
 
 export type AlbumDetail = {
@@ -106,9 +127,11 @@ export type AlbumDetail = {
 export type AlbumId = number;
 
 /**  Every failure a use case can report; domain rejections keep their own typed reasons. */
-export type AppError = { type: "library"; reason: LibraryError } | { type: "playlist"; reason: PlaylistError } | { type: "playback"; reason: PlaybackError } | { type: "download"; reason: DownloadError } | { type: "notFound" } | { type: "storage"; reason: string } | { type: "audio"; reason: string } | 
+export type AppError = { type: "library"; reason: LibraryError } | { type: "playlist"; reason: PlaylistError } | { type: "playback"; reason: PlaybackError } | { type: "download"; reason: DownloadError } | { type: "tags"; reason: TagError } | { type: "pin"; reason: PinError } | { type: "notFound" } | { type: "storage"; reason: string } | { type: "audio"; reason: string } | 
 /**  A picked image file cannot be read or decoded. */
 { type: "image"; reason: string } | 
+/**  A song file cannot be read or rewritten. */
+{ type: "songFile"; reason: string } | 
 /**  A download tool, the network or the media site failed. */
 { type: "fetch"; reason: string };
 
@@ -118,26 +141,42 @@ export type Artist = {
   cover: string | null,
   albumCount: number,
   trackCount: number,
+  /**  Place among the pinned of its list, the first being 0; none when it is not pinned. */
+  pin: number | null,
 };
 
 export type ArtistDetail = {
   artist: Artist,
   albums: Album[],
+  /**  Albums of other artists with songs that credit this one. */
+  appearsOn: Album[],
+  /**  Every song that credits the artist, theirs or a guest spot. */
   tracks: Track[],
 };
 
 /**  An artist, either of tracks or of albums. */
 export type ArtistId = number;
 
+/**  An artist as a song credits it, enough to link to the artist's page. */
+export type ArtistName = {
+  id: ArtistId,
+  name: string,
+};
+
 /**  What file a download produces: the original AAC stream as it is, or MP3 re-encoded at a fixed bitrate. */
 export type AudioQuality = "original" | "mp3-320" | "mp3-192" | "mp3-128";
+
+/**  What happens to the front cover of a song file. */
+export type CoverChange = { kind: "keep" } | 
+/**  The image file at `path` becomes the cover. */
+{ kind: "set"; path: string } | { kind: "remove" };
 
 /**  Where the artwork of a download comes from: the site's own image, or a file the user picked instead. */
 export type CoverSource = { kind: "web"; url: string } | 
 /**  A square copy the user picked, stored by `import_cover`. */
 { kind: "file"; path: string };
 
-export type DownloadError = { type: "unsupportedLink" } | { type: "collectionLink" } | { type: "titleEmpty" } | { type: "artistEmpty" } | { type: "yearInvalid" } | { type: "noMatch" } | { type: "unsupportedPlatform" };
+export type DownloadError = { type: "unsupportedLink" } | { type: "collectionLink" } | { type: "noMatch" } | { type: "unsupportedPlatform" };
 
 /**  One download started in this session. */
 export type DownloadId = number;
@@ -150,7 +189,7 @@ export type DownloadPreview = {
   coverUrl: string | null,
   durationMs: number,
   title: string,
-  artist: string,
+  artists: string[],
   album: string | null,
   year: number | null,
   qualities: QualityOption[],
@@ -161,7 +200,7 @@ export type DownloadRequest = {
   videoUrl: string,
   cover: CoverSource | null,
   title: string,
-  artist: string,
+  artists: string[],
   album: string | null,
   year: number | null,
   quality: AudioQuality,
@@ -217,6 +256,31 @@ export type LibraryChanged = null;
 
 export type LibraryError = { type: "notAbsolute" } | { type: "alreadyAdded" } | { type: "overlaps"; existing: string } | { type: "notInLibrary" };
 
+/**  One sung line; `words` is empty unless every word is timed, and `text` is empty for an instrumental gap. */
+export type LyricLine = {
+  startMs: number,
+  text: string,
+  words: LyricWord[],
+};
+
+export type LyricWord = {
+  startMs: number,
+  text: string,
+};
+
+/**  Where shown lyrics came from. */
+export type LyricsOrigin = 
+/**  The song file had them before Aio looked. */
+{ kind: "file" } | { kind: "lrclib"; id: number };
+
+/**  The lyrics panel's content for one song. */
+export type LyricsView = { kind: "synced"; lines: LyricLine[]; origin: LyricsOrigin } | { kind: "plain"; text: string; origin: LyricsOrigin } | { kind: "instrumental" } | { kind: "missing" };
+
+export type PinError = { type: "notPinned" };
+
+/**  Something that can be pinned to the top of its list. */
+export type PinTarget = { kind: "playlist"; id: PlaylistId } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId };
+
 /**  Where the queue was started from, so a view can tell whether the playing track belongs to it. */
 export type PlaybackContext = { kind: "songs" } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId } | { kind: "playlist"; id: PlaylistId } | { kind: "folder"; id: FolderId };
 
@@ -236,8 +300,9 @@ export type PlayerState = {
   index: number | null,
   isPlaying: boolean,
   positionMs: number,
-  /**  Percent from 0 to 100. */
+  /**  Percent from 0 to 100; it keeps the level while muted. */
   volume: number,
+  muted: boolean,
   shuffle: boolean,
   repeat: RepeatMode,
 };
@@ -254,6 +319,12 @@ export type Playlist = {
   ownCover: string | null,
   trackCount: number,
   durationMs: number,
+  /**  Unix seconds when the playlist was made. */
+  createdAt: number,
+  /**  Unix seconds when playback last started from the playlist, none when it never did. */
+  playedAt: number | null,
+  /**  Place among the pinned of its list, the first being 0; none when it is not pinned. */
+  pin: number | null,
 };
 
 export type PlaylistDetail = {
@@ -301,6 +372,8 @@ export type Scenario =
 /**  Where a song link points to. */
 export type Service = "youtube" | "youtubeMusic" | "spotify";
 
+export type TagError = { type: "titleEmpty" } | { type: "artistEmpty" } | { type: "yearInvalid" } | { type: "numberInvalid"; max: number };
+
 /**  The command line programs downloads need, by name. */
 export type Tool = "ytDlp" | "ffmpeg" | "deno";
 
@@ -333,18 +406,52 @@ export type Track = {
   id: TrackId,
   path: string,
   title: string,
-  artistId: ArtistId,
-  artist: string,
+  /**  The credited artists in order, the main one first; never empty. */
+  artists: ArtistName[],
   albumId: AlbumId,
   album: string,
   cover: string | null,
   trackNo: number | null,
   discNo: number | null,
   durationMs: number,
+  /**  The file left the library; only playlists still list the track, until the file is back. */
+  missing: boolean,
+};
+
+/**  The tags the edit dialog sends for one song; blank text and missing numbers clear those tags. */
+export type TrackEdit = {
+  title: string,
+  /**  The credited artists in order, the main one first. */
+  artists: string[],
+  album: string | null,
+  year: number | null,
+  trackNo: number | null,
+  discNo: number | null,
+  genre: string | null,
+  cover: CoverChange,
 };
 
 /**  One audio file of the library. */
 export type TrackId = number;
+
+/**  Tags of one song file as the edit dialog shows them, with facts about the file next to them. */
+export type TrackTags = {
+  path: string,
+  title: string,
+  /**  The credited artists in order; empty when the file names none. */
+  artists: string[],
+  /**  Set only when the file names an album artist of its own, as compilations do. */
+  albumArtist: string | null,
+  album: string | null,
+  year: number | null,
+  trackNo: number | null,
+  discNo: number | null,
+  genre: string | null,
+  /**  The file type by its extension, such as `MP3`. */
+  format: string,
+  bitrateKbps: number | null,
+  durationMs: number,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

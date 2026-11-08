@@ -14,6 +14,8 @@ import type { AudioQuality, CoverSource, DownloadPreview, FolderCheck, PlaylistI
 import { Cover, SourceCover } from '@/components/cover'
 import { CoverPicker } from '@/components/cover-picker'
 import { ServiceIcon, linkService, serviceNames } from '@/components/service-icon'
+import { AlbumField, ArtistsField, leading } from '@/components/library-fields'
+import { Fact, SongCard, YEAR_PATTERN, digitsOf } from '@/components/song-card'
 import { ToolInstallProgress } from '@/components/tool-install'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -48,9 +50,6 @@ const qualityLabels = {
   'mp3-192': 'MP3 192',
   'mp3-128': 'MP3 128',
 } as const satisfies Record<AudioQuality, string>
-
-/** A year tag as typed: empty, or four digits. */
-const YEAR_PATTERN = /^\d{4}$/
 
 /** Where the dialog was opened from: the playlist it pre-checks, or the folder it saves into. */
 type Origin = { playlistId: PlaylistId } | { folder: string }
@@ -154,7 +153,7 @@ function PasteButton({ onPaste }: { onPaste: (link: string) => void }) {
   return (
     <Button type="button" variant="outline" disabled={service === null} onClick={() => onPaste(link)}>
       {service === null ? <ClipboardIcon /> : <ServiceIcon service={service} className="size-4" />}
-      Paste from clipboard
+      Paste
     </Button>
   )
 }
@@ -188,7 +187,7 @@ function Status({ icon, children }: { icon: ReactNode; children: ReactNode }) {
 
 function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; origin: Origin; onDone: () => void }) {
   const [title, setTitle] = useState(preview.title)
-  const [artist, setArtist] = useState(preview.artist)
+  const [artists, setArtists] = useState(preview.artists)
   const [album, setAlbum] = useState(preview.album ?? '')
   const [year, setYear] = useState(preview.year?.toString() ?? '')
   const [cover, setCover] = useState<CoverSource | null>(
@@ -201,7 +200,7 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
   const { data: check } = useQuery(queries.downloadFolder(folder))
   const yearValid = year === '' || YEAR_PATTERN.test(year)
   const blocked =
-    title.trim() === '' || artist.trim() === '' || !yearValid || check === undefined || check.kind === 'overlaps'
+    title.trim() === '' || artists.length === 0 || !yearValid || check === undefined || check.kind === 'overlaps'
   const originalKbps = preview.qualities.find((option) => option.quality === 'original')?.kbps
 
   return (
@@ -214,7 +213,7 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
             videoUrl: preview.videoUrl,
             cover,
             title,
-            artist,
+            artists,
             album: album.trim() === '' ? null : album,
             year: year === '' ? null : Number(year),
             quality,
@@ -226,56 +225,58 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
       }}
     >
       <DialogBody className="pt-0">
-        <div className="overflow-hidden rounded-xl border bg-background/40">
-          <div className="flex gap-5 p-4">
-            <CoverPicker
-              removable={cover !== null}
-              onPick={(path) => setCover({ kind: 'file', path })}
-              onRemove={() => setCover(null)}
-              className="size-40"
-            >
-              <SourceCover source={cover} className="size-full shadow-lg" />
-            </CoverPicker>
-            <div className="grid min-w-0 flex-1 grid-cols-[1fr_5.5rem] content-start gap-3">
-              <TextField
-                label="Title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="col-span-2"
-              />
-              <TextField
-                label="Artist"
-                value={artist}
-                onChange={(e) => setArtist(e.target.value)}
-                className="col-span-2"
-              />
-              <TextField
-                label="Album"
-                placeholder="Optional"
-                value={album}
-                onChange={(e) => setAlbum(e.target.value)}
-              />
-              <TextField
-                label="Year"
-                placeholder="—"
-                inputMode="numeric"
-                maxLength={4}
-                value={year}
-                aria-invalid={!yearValid}
-                onChange={(e) => setYear(e.target.value.replace(/\D/g, ''))}
-                className="[&_input]:tabular-nums"
-              />
-            </div>
+        <SongCard
+          facts={
+            <>
+              <Fact label="Length">{formatClock(preview.durationMs)}</Fact>
+              {originalKbps !== undefined && <Fact label="Audio">AAC {originalKbps} kbps</Fact>}
+            </>
+          }
+        >
+          <CoverPicker
+            removable={cover !== null}
+            onPick={(path) => setCover({ kind: 'file', path })}
+            onRemove={() => setCover(null)}
+            className="size-40"
+          >
+            <SourceCover source={cover} className="size-full shadow-lg" />
+          </CoverPicker>
+          <div className="grid min-w-0 flex-1 grid-cols-[1fr_5.5rem] content-start gap-3">
+            <TextField
+              label="Title"
+              placeholder={preview.title}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="col-span-2"
+            />
+            <ArtistsField
+              placeholder={preview.artists.join(', ')}
+              value={artists}
+              onValueChange={setArtists}
+              className="col-span-2"
+            />
+            <AlbumField
+              placeholder={preview.album ?? undefined}
+              value={album}
+              onValueChange={setAlbum}
+              owner={artists[0] ?? ''}
+              onPick={(picked) => {
+                setArtists(leading(picked.artist, artists))
+                if (picked.year !== null) setYear(picked.year.toString())
+              }}
+            />
+            <TextField
+              label="Year"
+              placeholder={preview.year?.toString()}
+              inputMode="numeric"
+              maxLength={4}
+              value={year}
+              aria-invalid={!yearValid}
+              onChange={(e) => setYear(digitsOf(e.target.value))}
+              className="[&_input]:tabular-nums"
+            />
           </div>
-          <dl className="flex gap-8 border-t px-4 py-2.5 text-sm">
-            <Fact label="Source">
-              <ServiceIcon service={preview.service} className="size-4" />
-              {serviceNames[preview.service]}
-            </Fact>
-            <Fact label="Length">{formatClock(preview.durationMs)}</Fact>
-            {originalKbps !== undefined && <Fact label="Audio">AAC {originalKbps} kbps</Fact>}
-          </dl>
-        </div>
+        </SongCard>
         <Section title="Quality">
           <RadioGroup
             value={quality}
@@ -337,16 +338,6 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
         </Button>
       </DialogFooter>
     </form>
-  )
-}
-
-/** One read-only fact of the song, with a small caption over it. */
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-[0.625rem] font-semibold tracking-wider text-subtle-foreground uppercase">{label}</dt>
-      <dd className="flex items-center gap-1.5 text-muted-foreground tabular-nums">{children}</dd>
-    </div>
   )
 }
 

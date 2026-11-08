@@ -2,23 +2,25 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::Stdio;
-use std::sync::Arc;
+use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use lofty::config::WriteOptions;
-use lofty::file::{AudioFile as _, TaggedFileExt as _};
+use lofty::file::AudioFile as _;
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::tag::items::Timestamp;
-use lofty::tag::{Accessor as _, Tag};
 use serde_json::Value;
 
 use super::covers::square_jpeg;
-use super::tools::{ToolKit, command, fetch_error, last_error};
+use super::files::{main_tag, set_song_tags};
+use super::tools::{ToolKit, command, fetch_error, kill_tree, last_error};
 use crate::application::error::{AppError, AppResult};
 use crate::application::ports::{FetchJob, FetchProgress, MediaSource, SpotifyTrack, VideoInfo};
 use crate::application::views::CoverSource;
-use crate::domain::download::{AudioQuality, Candidate, DownloadError, SongTags, VideoFacts, year_of};
+use crate::domain::download::{AudioQuality, Candidate, DownloadError, VideoFacts, year_of};
+use crate::domain::tags::SongTags;
 
 /// How many search results are compared by length when matching a Spotify track.
 const SEARCH_RESULTS: u32 = 5;
@@ -265,20 +267,32 @@ impl MediaSource for YtDlpMedia {
       text
     });
     let stdout = child.stdout.take().ok_or_else(|| fetch_error("yt-dlp has no output"))?;
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-      if let Some(numbers) = line.trim().strip_prefix(PROGRESS_MARK) {
-        let mut parts = numbers.split_whitespace().map(|n| n.parse::<f64>().ok());
-        if let (Some(Some(done)), Some(Some(total))) = (parts.next(), parts.next())
-          && total > 0.0
-        {
-          progress(FetchProgress::Downloading((done / total).clamp(0.0, 1.0) as f32));
+    let child = Mutex::new(child);
+    thread::scope(|scope| {
+      scope.spawn(|| stop_when_cancelled(&child, job.cancelled));
+      for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Some(numbers) = line.trim().strip_prefix(PROGRESS_MARK) {
+          let mut parts = numbers.split_whitespace().map(|n| n.parse::<f64>().ok());
+          if let (Some(Some(done)), Some(Some(total))) = (parts.next(), parts.next())
+            && total > 0.0
+          {
+            progress(FetchProgress::Downloading((done / total).clamp(0.0, 1.0) as f32));
+          }
+        } else if line.starts_with("[ExtractAudio]") || line.starts_with("[Fixup") {
+          progress(FetchProgress::Converting);
         }
-      } else if line.starts_with("[ExtractAudio]") || line.starts_with("[Fixup") {
-        progress(FetchProgress::Converting);
       }
-    }
-    let status = child.wait().map_err(fetch_error)?;
+    });
+    let status = child
+      .into_inner()
+      .unwrap_or_else(PoisonError::into_inner)
+      .wait()
+      .map_err(fetch_error)?;
     let errors = errors.join().unwrap_or_default();
+    if job.cancelled.load(Ordering::Relaxed) {
+      remove_leftovers(&stem);
+      return Err(fetch_error("the download was cancelled"));
+    }
     if !status.success() {
       return Err(AppError::Fetch(last_error(&errors)));
     }
@@ -293,26 +307,8 @@ impl MediaSource for YtDlpMedia {
 
   fn write_tags(&self, path: &Path, tags: &SongTags, cover: Option<&CoverSource>) -> AppResult<()> {
     let mut file = lofty::read_from_path(path).map_err(fetch_error)?;
-    if file.primary_tag().is_none() {
-      let kind = file.primary_tag_type();
-      file.insert_tag(Tag::new(kind));
-    }
-    let tag = file
-      .primary_tag_mut()
-      .ok_or_else(|| AppError::Fetch(format!("{} cannot hold tags", path.display())))?;
-    tag.set_title(tags.title().to_owned());
-    tag.set_artist(tags.artist().to_owned());
-    match tags.album() {
-      Some(album) => tag.set_album(album.to_owned()),
-      None => tag.remove_album(),
-    }
-    match tags.year() {
-      Some(year) => tag.set_date(Timestamp {
-        year,
-        ..Timestamp::default()
-      }),
-      None => tag.remove_date(),
-    }
+    let tag = main_tag(&mut file).ok_or_else(|| AppError::Fetch(format!("{} cannot hold tags", path.display())))?;
+    set_song_tags(tag, tags);
     // a missing cover only costs the artwork, not the song
     if let Some(cover) = cover.and_then(|cover| {
       self
@@ -338,10 +334,60 @@ fn seconds_to_ms(value: Option<&Value>) -> u32 {
   })
 }
 
+/// Watches a running yt-dlp until it ends, stopping it as soon as the download is cancelled.
+fn stop_when_cancelled(child: &Mutex<Child>, cancelled: &AtomicBool) {
+  loop {
+    {
+      let mut child = child.lock().unwrap_or_else(PoisonError::into_inner);
+      if !matches!(child.try_wait(), Ok(None)) {
+        return;
+      }
+      if cancelled.load(Ordering::Relaxed) {
+        kill_tree(&mut child);
+        return;
+      }
+    }
+    thread::sleep(Duration::from_millis(100));
+  }
+}
+
+/// Removes what a stopped yt-dlp left next to `stem`: the audio file and its partial and intermediate files.
+fn remove_leftovers(stem: &Path) {
+  let (Some(folder), Some(name)) = (stem.parent(), stem.file_name().and_then(|n| n.to_str())) else {
+    return;
+  };
+  let Ok(entries) = std::fs::read_dir(folder) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let file = entry.file_name();
+    let Some(rest) = file
+      .to_str()
+      .and_then(|f| f.strip_prefix(name))
+      .and_then(|f| f.strip_prefix('.'))
+    else {
+      continue;
+    };
+    // "<stem>.<ext>" and its ".part", ".ytdl" or ".temp" companions, never another song that only starts alike
+    let mut parts = rest.split('.');
+    let ext = parts.next().unwrap_or_default();
+    let companion = parts.next();
+    let is_ext = !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric());
+    let is_companion = companion.is_none_or(|c| c.starts_with("part") || c == "ytdl" || c == "temp");
+    if is_ext && is_companion {
+      let _ = std::fs::remove_file(entry.path());
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use lofty::file::TaggedFileExt as _;
+  use lofty::tag::Accessor as _;
+
   use crate::application::ports::DownloadTools as _;
+  use crate::domain::artists::Artists;
   use crate::domain::download::{SongLink, guess_tags};
 
   /// Runs the whole pipeline against the real sites, keeping the tools in `<AIO_DATA_DIR>/tools`: `cargo test -- --ignored live_download`.
@@ -380,11 +426,18 @@ mod tests {
             video_url: &video.url,
             quality,
             target: &target,
+            cancelled: &AtomicBool::new(false),
           },
           &mut |_| steps += 1,
         )
         .unwrap();
-      let tags = SongTags::new("Never Gonna Give You Up", "Rick Astley", Some("Whenever"), Some(1987)).unwrap();
+      let tags = SongTags::new(
+        "Never Gonna Give You Up",
+        Artists::new(["Rick Astley"]).unwrap(),
+        Some("Whenever"),
+        Some(1987),
+      )
+      .unwrap();
       media
         .write_tags(
           &target,

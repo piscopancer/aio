@@ -22,13 +22,43 @@ pub struct Track {
   pub id: TrackId,
   pub path: String,
   pub title: String,
-  pub artist_id: ArtistId,
-  pub artist: String,
+  /// The credited artists in order, the main one first; never empty.
+  pub artists: Vec<ArtistName>,
   pub album_id: AlbumId,
   pub album: String,
   pub cover: Option<String>,
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
+  pub duration_ms: u32,
+  /// The file left the library; only playlists still list the track, until the file is back.
+  pub missing: bool,
+}
+
+/// An artist as a song credits it, enough to link to the artist's page.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct ArtistName {
+  pub id: ArtistId,
+  pub name: String,
+}
+
+/// Tags of one song file as the edit dialog shows them, with facts about the file next to them.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackTags {
+  pub path: String,
+  pub title: String,
+  /// The credited artists in order; empty when the file names none.
+  pub artists: Vec<String>,
+  /// Set only when the file names an album artist of its own, as compilations do.
+  pub album_artist: Option<String>,
+  pub album: Option<String>,
+  pub year: Option<u16>,
+  pub track_no: Option<u32>,
+  pub disc_no: Option<u32>,
+  pub genre: Option<String>,
+  /// The file type by its extension, such as `MP3`.
+  pub format: String,
+  pub bitrate_kbps: Option<u32>,
   pub duration_ms: u32,
 }
 
@@ -43,6 +73,8 @@ pub struct Album {
   pub cover: Option<String>,
   pub track_count: u32,
   pub duration_ms: u32,
+  /// Place among the pinned of its list, the first being 0; none when it is not pinned.
+  pub pin: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -53,6 +85,8 @@ pub struct Artist {
   pub cover: Option<String>,
   pub album_count: u32,
   pub track_count: u32,
+  /// Place among the pinned of its list, the first being 0; none when it is not pinned.
+  pub pin: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -66,6 +100,12 @@ pub struct Playlist {
   pub own_cover: Option<String>,
   pub track_count: u32,
   pub duration_ms: u32,
+  /// Unix seconds when the playlist was made.
+  pub created_at: u32,
+  /// Unix seconds when playback last started from the playlist, none when it never did.
+  pub played_at: Option<u32>,
+  /// Place among the pinned of its list, the first being 0; none when it is not pinned.
+  pub pin: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -75,9 +115,13 @@ pub struct AlbumDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct ArtistDetail {
   pub artist: Artist,
   pub albums: Vec<Album>,
+  /// Albums of other artists with songs that credit this one.
+  pub appears_on: Vec<Album>,
+  /// Every song that credits the artist, theirs or a guest spot.
   pub tracks: Vec<Track>,
 }
 
@@ -107,8 +151,9 @@ pub struct PlayerState {
   pub index: Option<u32>,
   pub is_playing: bool,
   pub position_ms: u32,
-  /// Percent from 0 to 100.
+  /// Percent from 0 to 100; it keeps the level while muted.
   pub volume: u8,
+  pub muted: bool,
   pub shuffle: bool,
   pub repeat: RepeatMode,
 }
@@ -132,7 +177,7 @@ pub struct DownloadPreview {
   pub cover_url: Option<String>,
   pub duration_ms: u32,
   pub title: String,
-  pub artist: String,
+  pub artists: Vec<String>,
   pub album: Option<String>,
   pub year: Option<u16>,
   pub qualities: Vec<QualityOption>,
@@ -233,4 +278,47 @@ pub struct ToolsView {
 pub struct DownloadSettingsView {
   /// The folder downloads go to unless the download picks another one.
   pub folder: String,
+}
+
+/// Where shown lyrics came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LyricsOrigin {
+  /// The song file had them before Aio looked.
+  File,
+  Lrclib {
+    id: u32,
+  },
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricWord {
+  pub start_ms: u32,
+  pub text: String,
+}
+
+/// One sung line; `words` is empty unless every word is timed, and `text` is empty for an instrumental gap.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricLine {
+  pub start_ms: u32,
+  pub text: String,
+  pub words: Vec<LyricWord>,
+}
+
+/// The lyrics panel's content for one song.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LyricsView {
+  Synced {
+    lines: Vec<LyricLine>,
+    origin: LyricsOrigin,
+  },
+  Plain {
+    text: String,
+    origin: LyricsOrigin,
+  },
+  Instrumental,
+  Missing,
 }

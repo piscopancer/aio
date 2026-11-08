@@ -85,6 +85,11 @@
     @apply bg-background font-sans text-foreground antialiased select-none;
   }
 
+  /* selected text takes the accent everywhere, in fields as well as in selectable text */
+  ::selection {
+    @apply bg-primary text-primary-foreground;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklab, var(--foreground) 25%, transparent) transparent;

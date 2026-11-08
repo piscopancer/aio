@@ -17,14 +17,19 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::application::covers::CoverService;
 use crate::application::downloads::DownloadService;
 use crate::application::library::LibraryService;
+use crate::application::lyrics::LyricsService;
+use crate::application::pins::PinService;
 use crate::application::playback::{PlaybackService, player_channel};
 use crate::application::playlists::PlaylistService;
 use crate::application::ports::SettingsStore;
+use crate::application::tags::TagService;
 use crate::domain::playback::Volume;
 use crate::domain::playlist::PlaylistName;
+use crate::domain::tags::{SongTags, UNKNOWN_ALBUM, UNKNOWN_ARTIST};
 use crate::infrastructure::audio;
 use crate::infrastructure::covers::CoverStore;
 use crate::infrastructure::files::LocalAudioFiles;
+use crate::infrastructure::lrclib::Lrclib;
 use crate::infrastructure::media::YtDlpMedia;
 use crate::infrastructure::sqlite::SqliteStore;
 use crate::infrastructure::tools::ToolKit;
@@ -39,6 +44,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
     .disable_serde_phases()
     .constant("PLAYLIST_NAME_MAX_CHARS", PlaylistName::MAX_CHARS)
     .constant("VOLUME_MAX", Volume::MAX)
+    .constant("UNKNOWN_ALBUM", UNKNOWN_ALBUM)
+    .constant("UNKNOWN_ARTIST", UNKNOWN_ARTIST)
+    .constant("TRACK_NUMBER_MAX", SongTags::MAX_NUMBER)
     .commands(collect_commands![
       commands::get_scenario,
       commands::list_folders,
@@ -57,7 +65,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::edit_playlist,
       commands::import_cover,
       commands::cover_color,
+      commands::track_tags,
+      commands::edit_track,
       commands::delete_playlist,
+      commands::pin,
+      commands::unpin,
+      commands::move_pin,
       commands::add_to_playlist,
       commands::remove_from_playlist,
       commands::move_playlist_track,
@@ -71,6 +84,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::previous_track,
       commands::seek,
       commands::set_volume,
+      commands::set_muted,
       commands::set_shuffle,
       commands::set_repeat,
       commands::get_download_settings,
@@ -83,6 +97,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::start_download,
       commands::list_downloads,
       commands::dismiss_download,
+      commands::track_lyrics,
+      commands::cancel_download,
     ])
     .events(collect_events![
       events::PlayerStateChanged,
@@ -134,12 +150,17 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_decorum::init())
+    .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_opener::init())
+    .plugin(tauri_plugin_updater::Builder::new().build())
     .invoke_handler(builder.invoke_handler())
     .setup(move |app| {
       builder.mount_events(app);
       // the toolbar stands in for the title bar; on Windows decorum draws the window buttons into it, keeping snap layouts
       if let Some(window) = app.get_webview_window("main") {
         window.create_overlay_titlebar()?;
+        #[cfg(windows)]
+        disable_browser_keys(&window);
       }
       let data_dir = app.path().app_data_dir()?;
       fs::create_dir_all(&data_dir)?;
@@ -153,10 +174,11 @@ pub fn run() {
       let library = Arc::new(LibraryService::new(
         store.clone(),
         store.clone(),
-        files,
+        files.clone(),
         notifier.clone(),
       ));
       let playlists = Arc::new(PlaylistService::new(store.clone()));
+      let pins = Arc::new(PinService::new(store.clone()));
       let covers = Arc::new(CoverService::new(Arc::new(CoverStore::new(covers_dir))));
       let tools = Arc::new(ToolKit::new(data_dir.join("tools")));
       let music_dir = app.path().audio_dir().unwrap_or_else(|_| data_dir.join("downloads"));
@@ -172,9 +194,39 @@ pub fn run() {
 
       let (player, inbox) = player_channel(store.playback_settings());
       let player = Arc::new(player);
+      #[cfg(windows)]
+      if let Some(window) = app.get_webview_window("main") {
+        interface::taskbar::attach(&window, player.clone());
+      }
       let (settings, player_notifier) = (store.clone(), notifier.clone());
       audio::spawn(move |output| PlaybackService::new(output, inbox, settings, player_notifier).run());
+      let lyrics = Arc::new(LyricsService::new(
+        files.clone(),
+        Arc::new(Lrclib::new()),
+        store.clone(),
+        store.clone(),
+        player.clone(),
+      ));
+      // finds of the last session that could not be written while their song played
+      lyrics.write_unwritten_later();
+      let tags = Arc::new(TagService::new(
+        files.clone(),
+        files,
+        store.clone(),
+        store.clone(),
+        player.clone(),
+        notifier.clone(),
+      ));
 
+      if scenario.is_none() {
+        // picks up files changed while the app was closed, and re-reads those a migration marked as changed
+        let startup = library.clone();
+        std::thread::spawn(move || {
+          if let Err(error) = startup.scan() {
+            eprintln!("startup scan failed: {error}");
+          }
+        });
+      }
       if let Some(scenario) = scenario {
         scenario::seed(scenario, store.as_ref(), store.as_ref(), &playlists, store.as_ref())?;
         scenario::start(scenario, &player, store.as_ref())?;
@@ -182,7 +234,10 @@ pub fn run() {
       app.manage(AppState {
         library,
         playlists,
+        pins,
         covers,
+        tags,
+        lyrics,
         downloads,
         queries: store,
         player,
@@ -192,6 +247,32 @@ pub fn run() {
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+/// Turns off the webview's browser shortcuts, such as Ctrl+F opening a find bar over the app's own search, Ctrl+P
+/// printing and F5 reloading; the developer tools stay reachable through Shift and right-click in dev builds.
+#[cfg(windows)]
+fn disable_browser_keys(window: &tauri::WebviewWindow) {
+  use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+  use windows_core::Interface;
+
+  let result = window.with_webview(|webview| {
+    // SAFETY: the controller belongs to this live webview and is used on its own thread inside the callback
+    let disabled = unsafe {
+      webview
+        .controller()
+        .CoreWebView2()
+        .and_then(|core| core.Settings())
+        .and_then(|settings| settings.cast::<ICoreWebView2Settings3>())
+        .and_then(|settings| settings.SetAreBrowserAcceleratorKeysEnabled(false))
+    };
+    if let Err(error) = disabled {
+      eprintln!("browser shortcuts stay on: {error}");
+    }
+  });
+  if let Err(error) = result {
+    eprintln!("browser shortcuts stay on: {error}");
+  }
 }
 
 #[cfg(test)]

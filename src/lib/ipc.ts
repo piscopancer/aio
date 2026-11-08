@@ -1,4 +1,12 @@
-import type { AppError, DownloadError, LibraryError, PlaybackError, PlaylistError } from '@/bindings'
+import type {
+  AppError,
+  DownloadError,
+  LibraryError,
+  PinError,
+  PlaybackError,
+  PlaylistError,
+  TagError,
+} from '@/bindings'
 
 /** A rejected backend command, carrying the typed reason next to a readable message. */
 export class CommandError extends Error {
@@ -47,6 +55,15 @@ function playlistMessage(reason: PlaylistError) {
   }
 }
 
+function pinMessage(reason: PinError) {
+  switch (reason.type) {
+    case 'notPinned':
+      return 'This is not pinned'
+    default:
+      return reason.type satisfies never
+  }
+}
+
 function playbackMessage(reason: PlaybackError) {
   switch (reason.type) {
     case 'volumeOutOfRange':
@@ -66,16 +83,25 @@ function downloadMessage(reason: DownloadError) {
       return 'This is not a YouTube, YouTube Music or Spotify song link'
     case 'collectionLink':
       return 'Playlist, album and artist links are not supported yet, paste a link to one song'
+    case 'noMatch':
+      return 'No matching song was found on YouTube Music'
+    case 'unsupportedPlatform':
+      return 'Downloading is not available on this operating system'
+    default:
+      return reason satisfies never
+  }
+}
+
+function tagMessage(reason: TagError) {
+  switch (reason.type) {
     case 'titleEmpty':
       return 'The song needs a title'
     case 'artistEmpty':
       return 'The song needs an artist'
     case 'yearInvalid':
       return 'A year has four digits'
-    case 'noMatch':
-      return 'No matching song was found on YouTube Music'
-    case 'unsupportedPlatform':
-      return 'Downloading is not available on this operating system'
+    case 'numberInvalid':
+      return `Track and disc numbers go from 1 to ${reason.max}`
     default:
       return reason satisfies never
   }
@@ -92,6 +118,12 @@ export function errorMessage(error: AppError) {
       return playbackMessage(error.reason)
     case 'download':
       return downloadMessage(error.reason)
+    case 'tags':
+      return tagMessage(error.reason)
+    case 'pin':
+      return pinMessage(error.reason)
+    case 'songFile':
+      return `The song file cannot be changed: ${error.reason}`
     case 'fetch':
       return error.reason
     case 'notFound':

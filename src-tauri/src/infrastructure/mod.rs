@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod covers;
 pub mod files;
+pub mod lrclib;
 pub mod media;
 mod schema;
 pub mod sqlite;

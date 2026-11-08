@@ -3,10 +3,12 @@ import { Link, Outlet, createRootRouteWithContext, useRouterState } from '@tanst
 import { useEffect, useState } from 'react'
 import { LibraryTabs } from '@/components/library-tabs'
 import { PlayerBar } from '@/components/player-bar'
+import { LyricsPanel, LyricsStage } from '@/components/lyrics-panel'
 import { QueuePanel } from '@/components/queue-panel'
 import { Sidebar } from '@/components/sidebar'
 import { Button } from '@/components/ui/button'
 import { Toolbar } from '@/components/toolbar'
+import { TrackEditDialog } from '@/components/track-edit-dialog'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useLayout } from '@/lib/layout'
@@ -21,7 +23,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 /** Window layout: sidebar, scrolling main view and the optional queue on top, the player bar below. */
 function Shell() {
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null)
-  const queueOpen = useLayout((state) => state.queueOpen)
+  const panel = useLayout((state) => state.panel)
+  const lyricsView = useLayout((state) => (state.panel === 'lyrics' ? state.lyricsView : null))
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   useAppShortcuts()
 
@@ -36,19 +39,25 @@ function Shell() {
         <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-2 px-2">
           <div className="flex min-h-0 gap-2">
             <Sidebar />
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
-              <LibraryTabs />
-              <main ref={setScrollElement} className="min-h-0 flex-1 overflow-y-auto">
-                <ScrollContainerContext value={scrollElement}>
-                  <Outlet />
-                </ScrollContainerContext>
-              </main>
+            <div className="relative flex min-w-0 flex-1 gap-2">
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
+                <LibraryTabs />
+                <main ref={setScrollElement} className="min-h-0 flex-1 overflow-y-auto">
+                  <ScrollContainerContext value={scrollElement}>
+                    <Outlet />
+                  </ScrollContainerContext>
+                </main>
+              </div>
+              {panel === 'queue' && <QueuePanel />}
+              {panel === 'lyrics' && <LyricsPanel />}
+              {lyricsView === 'expanded' && <LyricsStage view="expanded" />}
             </div>
-            {queueOpen && <QueuePanel />}
           </div>
           <PlayerBar />
         </div>
       </div>
+      {lyricsView === 'fullscreen' && <LyricsStage view="fullscreen" />}
+      <TrackEditDialog />
       <Toaster />
     </TooltipProvider>
   )

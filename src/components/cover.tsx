@@ -11,21 +11,27 @@ const fallbackIcons = {
   folder: FolderIcon,
 } as const
 
-/** Artwork of a library item, or an icon of its kind when it has none. */
+/** Peach light of a pinned cover, shining from the top-right corner where the pin badge sits towards the opposite one. */
+const PINNED_GLOW =
+  'pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,oklch(from_var(--primary)_calc(l+0.02)_calc(c*1.4)_h/0.85),transparent_50%)] mix-blend-screen'
+
+/** Artwork of a library item, or an icon of its kind when it has none; a `pinned` one glows from its top-right corner. */
 export function Cover({
   src,
   kind,
+  pinned = false,
   className,
 }: {
   src: string | null
   kind: keyof typeof fallbackIcons
+  pinned?: boolean
   className?: string | undefined
 }) {
   const Fallback = fallbackIcons[kind]
   return (
     <div
       className={cn(
-        'flex aspect-square shrink-0 items-center justify-center overflow-hidden rounded-md bg-secondary text-subtle-foreground',
+        'relative flex aspect-square shrink-0 items-center justify-center overflow-hidden rounded-md bg-secondary text-subtle-foreground',
         kind === 'artist' && 'rounded-full',
         className,
       )}
@@ -33,8 +39,16 @@ export function Cover({
       {src === null ? (
         <Fallback className="size-2/5" strokeWidth={1.5} />
       ) : (
-        <img src={coverSrc(src)} alt="" draggable={false} className="size-full object-cover" />
+        <img
+          src={coverSrc(src)}
+          alt=""
+          draggable={false}
+          loading="lazy"
+          decoding="async"
+          className="size-full object-cover"
+        />
       )}
+      {pinned && <span className={PINNED_GLOW} />}
     </div>
   )
 }

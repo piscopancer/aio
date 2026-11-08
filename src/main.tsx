@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client'
 import { RouteError } from '@/components/route-error'
 import { connectBackend } from '@/lib/backend'
 import { queryClient } from '@/lib/query'
+import { scheduleUpdateChecks } from '@/lib/updates'
 import { routeTree } from '@/routeTree.gen'
 
 const router = createRouter({
@@ -27,6 +28,7 @@ const root = document.getElementById('root')
 if (root === null) throw new Error('index.html has no #root element')
 
 await connectBackend()
+scheduleUpdateChecks()
 
 createRoot(root).render(
   <StrictMode>

@@ -1,12 +1,12 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Music2Icon } from 'lucide-react'
-import type { PlaybackContext } from '@/bindings'
 import { EmptyLibrary } from '@/components/empty-state'
 import { MetaDot, PageHeader } from '@/components/page-header'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
 import { formatLength, plural } from '@/lib/format'
+import { songsContext as context } from '@/lib/player'
 import { queries } from '@/lib/query'
 import { libraryTint } from '@/lib/tint'
 
@@ -14,8 +14,6 @@ export const Route = createFileRoute('/')({
   loader: ({ context }) => context.queryClient.ensureQueryData(queries.tracks()),
   component: Songs,
 })
-
-const context = { kind: 'songs' } as const satisfies PlaybackContext
 
 function Songs() {
   const { data: tracks } = useSuspenseQuery(queries.tracks())
@@ -28,8 +26,8 @@ function Songs() {
         title="Songs"
         tint={libraryTint}
         cover={
-          <div className="flex items-center justify-center rounded-md bg-linear-135 from-primary to-primary-foreground">
-            <Music2Icon className="size-1/3 text-foreground" />
+          <div className="flex items-center justify-center rounded-md bg-linear-135 from-[oklch(from_var(--primary)_calc(l+0.08)_calc(c*0.6)_h)] to-primary">
+            <Music2Icon className="size-1/3 text-primary-foreground" />
           </div>
         }
         meta={

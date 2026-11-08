@@ -4,6 +4,9 @@ import { createContext, use, useLayoutEffect, useRef, useState } from 'react'
 /** The scrolling main view, shared so long lists can virtualize against it. */
 export const ScrollContainerContext = createContext<HTMLElement | null>(null)
 
+/** Space between the rows of a list, in pixels, so neighbouring highlighted rows never touch; `gap-1` in the lists that are not virtualized. */
+export const ROW_GAP = 4
+
 /** Virtualizes a list that sits somewhere inside `scrollElement`, below content of any height. */
 export function useListVirtualizer(scrollElement: HTMLElement | null, count: number, rowHeight: number) {
   const listRef = useRef<HTMLDivElement>(null)
@@ -27,7 +30,10 @@ export function useListVirtualizer(scrollElement: HTMLElement | null, count: num
     count,
     getScrollElement: () => scrollElement,
     estimateSize: () => rowHeight,
+    gap: ROW_GAP,
     overscan: 10,
+    // a scroll frame may render a moment later instead of forcing a synchronous React render inside the scroll event
+    useFlushSync: false,
     scrollMargin,
   })
   return { listRef, virtualizer }

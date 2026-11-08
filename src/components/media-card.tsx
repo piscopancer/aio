@@ -1,29 +1,42 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import type { PlaybackContext } from '@/bindings'
+import { PinBadge } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { useIsPlayingFrom, usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
-/** Grid card of an album or artist; `link` is a full-card overlay link, the play button sits above it. */
+/** Grid card of an album or artist; `link` is a full-card overlay link, the play button sits above it; other props go to the card, for menus and dragging. */
 export function MediaCard({
   cover,
   title,
   subtitle,
   context,
   link,
-}: {
+  pinned = false,
+  className,
+  ...props
+}: Omit<ComponentProps<'div'>, 'title'> & {
   cover: ReactNode
   title: string
   subtitle: ReactNode
   context: PlaybackContext
   link: ReactNode
+  pinned?: boolean
 }) {
   const playingHere = useIsPlayingFrom(context)
   const isPlaying = usePlayer((state) => playingHere && state.isPlaying)
   return (
-    <div className="group relative flex flex-col gap-2 rounded-md p-3 transition-colors hover:bg-surface-hover">
+    // off-screen cards skip layout and paint; the browser keeps their last size so the scrollbar stays steady
+    <div
+      className={cn(
+        'group relative flex flex-col gap-2 rounded-md p-3 transition-colors [contain-intrinsic-size:auto_15rem] [content-visibility:auto] hover:bg-surface-hover',
+        className,
+      )}
+      {...props}
+    >
       <div className="relative">
-        <div className="shadow-lg shadow-black/40 [&>*]:w-full">{cover}</div>
+        <div className="*:w-full *:shadow-lg *:shadow-black/40">{cover}</div>
+        {pinned && <PinBadge size="card" />}
         <PlayButton
           context={context}
           className={cn(

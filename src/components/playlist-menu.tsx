@@ -1,6 +1,7 @@
 import { ListEndIcon, PencilIcon, PlayIcon, Trash2Icon } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import type { Playlist } from '@/bindings'
+import { PinMenuItem } from '@/components/pin-controls'
 import { type PlaylistDialog, PlaylistDialogs } from '@/components/playlist-dialogs'
 import {
   ContextMenu,
@@ -38,11 +39,12 @@ export function PlaylistMenu({ playlist, children }: { playlist: Playlist; child
             Add to queue
           </ContextMenuItem>
           <ContextMenuSeparator />
+          <PinMenuItem target={{ kind: 'playlist', id: playlist.id }} />
           <ContextMenuItem onSelect={() => setDialog('edit')}>
             <PencilIcon />
             Edit details
           </ContextMenuItem>
-          <ContextMenuItem variant="destructive" onSelect={() => setDialog('delete')}>
+          <ContextMenuItem onSelect={() => setDialog('delete')}>
             <Trash2Icon />
             Delete
           </ContextMenuItem>

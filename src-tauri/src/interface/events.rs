@@ -54,6 +54,8 @@ impl TauriNotifier {
 impl Notifier for TauriNotifier {
   fn player_changed(&self, state: &PlayerState) {
     self.emit(PlayerStateChanged(state.clone()));
+    #[cfg(windows)]
+    super::taskbar::show(&self.0, state);
   }
 
   fn playback_progress(&self, position_ms: u32) {

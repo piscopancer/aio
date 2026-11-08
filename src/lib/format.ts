@@ -38,3 +38,8 @@ export function formatBytes(bytes: number) {
   const value = bytes / 1000 ** exponent
   return `${value.toFixed(value < 10 && exponent > 0 ? 1 : 0)} ${units[exponent]}`
 }
+
+/** The credited artists of a song in one line, the way the file's plain artist tag writes them. */
+export function credit(artists: readonly { name: string }[]) {
+  return artists.map((artist) => artist.name).join(', ')
+}

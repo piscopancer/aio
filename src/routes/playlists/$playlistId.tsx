@@ -6,6 +6,7 @@ import { Cover } from '@/components/cover'
 import { DownloadDialog } from '@/components/download-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { MetaDot, PageHeader } from '@/components/page-header'
+import { PinButton } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { type PlaylistDialog, PlaylistDialogs } from '@/components/playlist-dialogs'
 import { TrackTable } from '@/components/track-table'
@@ -14,7 +15,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { formatLength, plural } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
-import { tint } from '@/lib/tint'
 
 export const Route = createFileRoute('/playlists/$playlistId')({
   params: idParam('playlistId'),
@@ -35,7 +35,6 @@ function PlaylistPage() {
       <PageHeader
         eyebrow="Playlist"
         title={playlist.name}
-        tint={tint(playlist.id)}
         art={playlist.cover}
         cover={<Cover src={playlist.cover} kind="playlist" />}
         onTitleClick={() => setDialog('edit')}
@@ -48,6 +47,7 @@ function PlaylistPage() {
         }
       >
         <PlayButton context={context} disabled={tracks.length === 0} />
+        <PinButton target={{ kind: 'playlist', id: playlist.id }} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" aria-label={`More options for ${playlist.name}`} className="size-10">

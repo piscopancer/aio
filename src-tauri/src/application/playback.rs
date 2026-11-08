@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -24,11 +25,29 @@ pub enum PlayerCommand {
   Next,
   Previous,
   Seek(u32),
+  /// Sets the level and lets the sound back in when it was muted.
   SetVolume(Volume),
+  /// Silences the player or lets it play at its level again, which stays as it was.
+  SetMuted(bool),
   SetShuffle(bool),
   SetRepeat(RepeatMode),
   Enqueue(Vec<Track>),
   Remove(QueueKey),
+  /// Lets go of the playing file when it is one of `paths`, remembering where it was, so the file can be rewritten;
+  /// `done` hears back once nothing holds it.
+  Release {
+    paths: Vec<String>,
+    done: Sender<()>,
+  },
+  /// Swaps in the newer versions of queued tracks and picks a released file up again where it was.
+  Refresh(Vec<Track>),
+}
+
+/// Where a released track was, so it resumes there.
+#[derive(Clone, Copy)]
+struct Suspended {
+  position: Duration,
+  playing: bool,
 }
 
 /// Thread-safe handle the interface uses to drive the player and read its last published state.
@@ -52,6 +71,7 @@ pub fn player_channel(settings: PlaybackSettings) -> (PlayerHandle, PlayerInbox)
     is_playing: false,
     position_ms: 0,
     volume: settings.volume.percent(),
+    muted: false,
     shuffle: settings.shuffle,
     repeat: settings.repeat,
   }));
@@ -77,9 +97,29 @@ impl PlayerHandle {
     lock(&self.state).clone()
   }
 
-  /// Queues the tracks of a context and starts at `start`, or at the first track when it is not given.
-  pub fn play(&self, queries: &dyn LibraryQueries, context: PlaybackContext, start: Option<TrackId>) -> AppResult<()> {
-    let tracks = queries.context_tracks(context)?;
+  /// Runs `rewrite` on files while the player holds none of `paths`, then hands it the tracks as they are after.
+  pub fn while_released<T>(&self, paths: Vec<String>, rewrite: impl FnOnce() -> (T, Vec<Track>)) -> T {
+    let (done, released) = mpsc::channel();
+    self.send(PlayerCommand::Release { paths, done });
+    // a player that is gone holds nothing either
+    let _ = released.recv();
+    let (result, tracks) = rewrite();
+    self.send(PlayerCommand::Refresh(tracks));
+    result
+  }
+
+  /// Queues the tracks of a context and starts at `start`, or at the first track when it is not given; `order` lists the tracks in the order the view shows them when it is sorted, and the queue follows it.
+  pub fn play(
+    &self,
+    queries: &dyn LibraryQueries,
+    context: PlaybackContext,
+    start: Option<TrackId>,
+    order: Option<&[TrackId]>,
+  ) -> AppResult<()> {
+    let mut tracks = queries.context_tracks(context)?;
+    if let Some(order) = order {
+      arrange(&mut tracks, order);
+    }
     if tracks.is_empty() {
       return Err(PlaybackError::NothingToPlay.into());
     }
@@ -105,8 +145,11 @@ pub struct PlaybackService<O: AudioOutput> {
   notifier: Arc<dyn Notifier>,
   queue: Queue<Track>,
   volume: Volume,
+  /// The sound is off while the level stays, so unmuting goes back to it; it lasts for the session only.
+  muted: bool,
   loaded: bool,
   playing: bool,
+  suspended: Option<Suspended>,
 }
 
 impl<O: AudioOutput> PlaybackService<O> {
@@ -119,8 +162,10 @@ impl<O: AudioOutput> PlaybackService<O> {
       notifier,
       queue: Queue::new(saved.shuffle, saved.repeat),
       volume: saved.volume,
+      muted: false,
       loaded: false,
       playing: false,
+      suspended: None,
     }
   }
 
@@ -188,8 +233,14 @@ impl<O: AudioOutput> PlaybackService<O> {
       }
       PlayerCommand::SetVolume(volume) => {
         self.volume = volume;
-        self.output.set_volume(volume);
+        self.muted = false;
+        self.output.set_volume(self.audible());
         self.save_settings()
+      }
+      PlayerCommand::SetMuted(muted) => {
+        self.muted = muted;
+        self.output.set_volume(self.audible());
+        Ok(())
       }
       PlayerCommand::SetShuffle(shuffle) => {
         self.queue.set_shuffle(shuffle, &mut rand::rng());
@@ -211,6 +262,37 @@ impl<O: AudioOutput> PlaybackService<O> {
           Ok(())
         }
       },
+      PlayerCommand::Release { paths, done } => {
+        let held = self.loaded
+          && self
+            .queue
+            .current()
+            .is_some_and(|entry| paths.contains(&entry.item().path));
+        if held {
+          self.suspended = Some(Suspended {
+            position: self.output.position(),
+            playing: self.playing,
+          });
+          self.stop();
+        }
+        let _ = done.send(());
+        Ok(())
+      }
+      PlayerCommand::Refresh(tracks) => {
+        self
+          .queue
+          .refresh(|item| tracks.iter().find(|track| track.id == item.id).cloned());
+        let Some(suspended) = self.suspended.take() else {
+          return Ok(());
+        };
+        self.load_current(false)?;
+        self.seek(suspended.position)?;
+        if suspended.playing {
+          self.output.play();
+          self.playing = true;
+        }
+        Ok(())
+      }
     }
   }
 
@@ -230,7 +312,7 @@ impl<O: AudioOutput> PlaybackService<O> {
       self.output.unload();
       return Err(PlaybackError::NothingToPlay.into());
     };
-    self.output.load(&track, self.volume, play)?;
+    self.output.load(&track, self.audible(), play)?;
     self.loaded = true;
     self.playing = play;
     Ok(())
@@ -246,6 +328,11 @@ impl<O: AudioOutput> PlaybackService<O> {
     self.output.unload();
     self.loaded = false;
     self.playing = false;
+  }
+
+  /// The level the output plays at: silence while muted, the set level otherwise.
+  fn audible(&self) -> Volume {
+    if self.muted { Volume::SILENT } else { self.volume }
   }
 
   fn save_settings(&self) -> AppResult<()> {
@@ -272,6 +359,7 @@ impl<O: AudioOutput> PlaybackService<O> {
       is_playing: self.playing,
       position_ms: self.position_ms(),
       volume: self.volume.percent(),
+      muted: self.muted,
       shuffle: self.queue.shuffle(),
       repeat: self.queue.repeat(),
     };
@@ -290,4 +378,10 @@ fn queue_item(entry: &QueueEntry<Track>) -> QueueItem {
 fn lock(state: &Mutex<PlayerState>) -> MutexGuard<'_, PlayerState> {
   // a poisoned lock only means a reader panicked; the snapshot itself is always whole
   state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Puts the tracks in the order of `order`; tracks it leaves out, as when the view is a moment behind the library, keep their own order after the rest.
+fn arrange(tracks: &mut [Track], order: &[TrackId]) {
+  let rank: HashMap<TrackId, usize> = order.iter().enumerate().map(|(index, id)| (*id, index)).collect();
+  tracks.sort_by_key(|track| rank.get(&track.id).copied().unwrap_or(usize::MAX));
 }

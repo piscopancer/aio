@@ -1,15 +1,16 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
+import type { Album } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { AlbumCard } from '@/components/library-cards'
 import { MediaGrid } from '@/components/media-card'
 import { MetaDot, PageHeader } from '@/components/page-header'
+import { PinButton } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
 import { plural } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
-import { tint } from '@/lib/tint'
 
 export const Route = createFileRoute('/artists/$artistId')({
   params: idParam('artistId'),
@@ -20,7 +21,7 @@ export const Route = createFileRoute('/artists/$artistId')({
 function ArtistPage() {
   const { artistId } = Route.useParams()
   const {
-    data: { artist, albums, tracks },
+    data: { artist, albums, appearsOn, tracks },
   } = useSuspenseQuery(queries.artist(artistId))
   const context = { kind: 'artist', id: artist.id } as const
 
@@ -29,7 +30,6 @@ function ArtistPage() {
       <PageHeader
         eyebrow="Artist"
         title={artist.name}
-        tint={tint(artist.id)}
         art={artist.cover}
         cover={<Cover src={artist.cover} kind="artist" />}
         meta={
@@ -41,19 +41,28 @@ function ArtistPage() {
         }
       >
         <PlayButton context={context} />
+        <PinButton target={{ kind: 'artist', id: artist.id }} />
       </PageHeader>
-      {albums.length > 0 && (
-        <section className="pb-6">
-          <h2 className="px-6 pb-2 text-2xl font-bold">Discography</h2>
-          <MediaGrid>
-            {albums.map((album) => (
-              <AlbumCard key={album.id} album={album} showArtist={false} />
-            ))}
-          </MediaGrid>
-        </section>
-      )}
-      <h2 className="px-6 pb-2 text-2xl font-bold">Songs</h2>
-      <TrackTable tracks={tracks} context={context} />
+      <section className="pb-6">
+        <TrackTable tracks={tracks} context={context} />
+      </section>
+      <AlbumSection title="Discography" albums={albums} showArtist={false} />
+      <AlbumSection title="Appears on" albums={appearsOn} showArtist />
     </>
+  )
+}
+
+/** A titled grid of albums, left out when there are none. */
+function AlbumSection({ title, albums, showArtist }: { title: string; albums: readonly Album[]; showArtist: boolean }) {
+  if (albums.length === 0) return null
+  return (
+    <section className="pb-6">
+      <h2 className="px-6 pb-2 text-2xl font-bold">{title}</h2>
+      <MediaGrid>
+        {albums.map((album) => (
+          <AlbumCard key={album.id} album={album} showArtist={showArtist} />
+        ))}
+      </MediaGrid>
+    </section>
   )
 }

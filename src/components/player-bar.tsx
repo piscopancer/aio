@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import {
   ListMusicIcon,
+  MicVocalIcon,
   PauseIcon,
   PlayIcon,
   Repeat1Icon,
@@ -13,17 +14,26 @@ import {
   VolumeIcon,
   VolumeXIcon,
 } from 'lucide-react'
-import { type ComponentProps, useRef, useState } from 'react'
-import { type PlaybackContext, VOLUME_MAX } from '@/bindings'
-import { ArtistMenu } from '@/components/artist-menu'
+import { type ComponentProps, type ReactNode, useState } from 'react'
+import { VOLUME_MAX } from '@/bindings'
+import { ArtistLinks } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
 import { TrackMenu } from '@/components/track-menu'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { formatClock } from '@/lib/format'
-import { toggleQueue, useLayout } from '@/lib/layout'
-import { currentItem, nextRepeat, player, usePlayer } from '@/lib/player'
+import {
+  LYRICS_KEYS,
+  NEXT_KEYS,
+  PREVIOUS_KEYS,
+  MUTE_KEYS,
+  REPEAT_KEYS,
+  type SidePanel,
+  togglePanel,
+  useLayout,
+} from '@/lib/layout'
+import { currentItem, nextRepeat, player, songsContext, usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
 /** Bottom bar: the current track, transport controls with the seek bar, then queue and volume. */
@@ -33,14 +43,17 @@ export function PlayerBar() {
       <NowPlaying />
       <Transport />
       <div className="flex items-center justify-end gap-2 pr-2">
-        <QueueToggle />
+        <PanelToggle panel="lyrics" label="Lyrics" keys={LYRICS_KEYS}>
+          <MicVocalIcon />
+        </PanelToggle>
+        <PanelToggle panel="queue" label="Queue">
+          <ListMusicIcon />
+        </PanelToggle>
         <VolumeControl />
       </div>
     </footer>
   )
 }
-
-const songsContext = { kind: 'songs' } as const satisfies PlaybackContext
 
 /** Current track; right-click opens the track menu, or the artist menu over the artist name. */
 function NowPlaying() {
@@ -60,15 +73,7 @@ function NowPlaying() {
           >
             {track.title}
           </Link>
-          <ArtistMenu artistId={track.artistId}>
-            <Link
-              to="/artists/$artistId"
-              params={{ artistId: track.artistId }}
-              className="w-fit max-w-full truncate text-xs text-muted-foreground hover:text-foreground hover:underline"
-            >
-              {track.artist}
-            </Link>
-          </ArtistMenu>
+          <ArtistLinks artists={track.artists} className="text-xs text-muted-foreground" />
         </div>
       </div>
     </TrackMenu>
@@ -79,7 +84,8 @@ function NowPlaying() {
 const toggledClass =
   'text-primary hover:text-primary-hover after:absolute after:bottom-0 after:size-1 after:rounded-full after:bg-current'
 
-function Transport() {
+/** Shuffle, previous, play or pause, next and repeat, with the seek bar under them. */
+export function Transport() {
   const hasTrack = usePlayer((state) => state.index !== null)
   const isPlaying = usePlayer((state) => state.isPlaying)
   const shuffle = usePlayer((state) => state.shuffle)
@@ -100,7 +106,7 @@ function Transport() {
             <ShuffleIcon />
           </Button>
         </Hint>
-        <Hint label="Previous">
+        <Hint label="Previous" keys={PREVIOUS_KEYS}>
           <Button variant="ghost" size="icon" disabled={!hasTrack} onClick={player.previous}>
             <SkipBackIcon className="fill-current" />
           </Button>
@@ -110,12 +116,15 @@ function Transport() {
             <PlayPauseIcon className="fill-current" />
           </Button>
         </Hint>
-        <Hint label="Next">
+        <Hint label="Next" keys={NEXT_KEYS}>
           <Button variant="ghost" size="icon" disabled={!hasTrack} onClick={player.next}>
             <SkipForwardIcon className="fill-current" />
           </Button>
         </Hint>
-        <Hint label={{ off: 'Enable repeat', all: 'Enable repeat one', one: 'Disable repeat' }[repeat]}>
+        <Hint
+          label={{ off: 'Enable repeat', all: 'Enable repeat one', one: 'Disable repeat' }[repeat]}
+          keys={REPEAT_KEYS}
+        >
           <Button
             variant="ghost"
             size="icon"
@@ -131,10 +140,10 @@ function Transport() {
   )
 }
 
-/** Value shown while the user drags a slider, falling back to the backend value otherwise. */
+/** Value shown while the user drags a slider, falling back to the backend value otherwise, and whether a drag is going on. */
 function useDraft(value: number) {
   const [draft, setDraft] = useState<number | null>(null)
-  return [draft ?? value, setDraft] as const
+  return [draft ?? value, setDraft, draft !== null] as const
 }
 
 /** Single-thumb slider reporting plain numbers. */
@@ -186,12 +195,28 @@ function SeekBar() {
   )
 }
 
-function QueueToggle() {
-  const queueOpen = useLayout((state) => state.queueOpen)
+/** Player bar button that opens one of the side panels in place of the other. */
+function PanelToggle({
+  panel,
+  label,
+  keys,
+  children,
+}: {
+  panel: SidePanel
+  label: string
+  keys?: readonly string[]
+  children: ReactNode
+}) {
+  const open = useLayout((state) => state.panel === panel)
   return (
-    <Hint label="Queue">
-      <Button variant="ghost" size="icon" className={cn('relative', queueOpen && toggledClass)} onClick={toggleQueue}>
-        <ListMusicIcon />
+    <Hint label={label} {...(keys && { keys })}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn('relative', open && toggledClass)}
+        onClick={() => togglePanel(panel)}
+      >
+        {children}
       </Button>
     </Hint>
   )
@@ -206,28 +231,25 @@ function volumeIcon(volume: number) {
 
 function VolumeControl() {
   const volume = usePlayer((state) => state.volume)
-  const [shown, setDraft] = useDraft(volume)
-  /** Level to return to when unmuting. */
-  const beforeMute = useRef(VOLUME_MAX / 2)
-  const Icon = volumeIcon(shown)
+  // muted, the slider keeps the level dimmed, and unmuting goes back to it
+  const muted = usePlayer((state) => state.muted)
+  const [shown, setDraft, sliding] = useDraft(volume)
+  const [hovered, setHovered] = useState(false)
+  const Icon = volumeIcon(muted ? 0 : shown)
 
   return (
     <div className="flex items-center gap-1">
-      <Hint label={volume === 0 ? 'Unmute' : 'Mute'}>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => {
-            if (volume > 0) beforeMute.current = volume
-            player.setVolume(volume > 0 ? 0 : beforeMute.current)
-          }}
-        >
+      <Hint label={muted ? 'Unmute' : 'Mute'} keys={MUTE_KEYS}>
+        <Button variant="ghost" size="icon" onClick={() => player.setMuted(!muted)}>
           <Icon />
         </Button>
       </Hint>
       <ValueSlider
         aria-label="Volume"
-        className="w-24"
+        thumbHint={sliding || hovered ? `${shown}%` : null}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        className={cn('w-24', muted && '[&_[data-slot=slider-range]]:opacity-40')}
         max={VOLUME_MAX}
         value={shown}
         onSlide={(level) => {

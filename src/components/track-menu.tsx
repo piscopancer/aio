@@ -1,6 +1,15 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Disc3Icon, ListEndIcon, ListPlusIcon, MicVocalIcon, PlayIcon, PlusIcon, Trash2Icon } from 'lucide-react'
+import {
+  Disc3Icon,
+  ListEndIcon,
+  ListPlusIcon,
+  MicVocalIcon,
+  PencilIcon,
+  PlayIcon,
+  PlusIcon,
+  Trash2Icon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { PlaybackContext, Track } from '@/bindings'
 import { Cover } from '@/components/cover'
@@ -16,6 +25,7 @@ import {
 } from '@/components/ui/context-menu'
 import { player } from '@/lib/player'
 import { useCreatePlaylist } from '@/lib/playlists'
+import { editTrack } from '@/lib/track-editor'
 import { mutations, queries } from '@/lib/query'
 
 type TrackMenuProps = { track: Track; context: PlaybackContext }
@@ -35,12 +45,23 @@ export function TrackMenu({ children, ...props }: TrackMenuProps & { children: R
 /** Mounted only while the menu is open, so closed rows run no queries. */
 function TrackMenuItems({ track, context }: TrackMenuProps) {
   const navigate = useNavigate()
+  // one artist is a plain item, several get a submenu to pick from
+  const soleArtist = track.artists.length === 1 ? track.artists[0] : undefined
   const { data: playlists = [] } = useQuery(queries.playlists())
   const addToPlaylist = useMutation(mutations.addToPlaylist())
   const removeFromPlaylist = useMutation(mutations.removeFromPlaylist())
   const createPlaylist = useCreatePlaylist()
   const trackIds = [track.id]
 
+  if (track.missing)
+    return (
+      context.kind === 'playlist' && (
+        <ContextMenuItem onSelect={() => removeFromPlaylist.mutate({ id: context.id, trackIds })}>
+          <Trash2Icon />
+          Remove from this playlist
+        </ContextMenuItem>
+      )
+    )
   return (
     <>
       <ContextMenuItem onSelect={() => player.play(context, track.id)}>
@@ -64,7 +85,11 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
               addToPlaylist.mutate({ id, name, trackIds })
             }}
           >
-            <PlusIcon />
+            {/* a blank playlist cover with a plus on its corner, lined up with the covers of the playlists below */}
+            <span className="relative -my-1">
+              <Cover src={null} kind="playlist" className="size-7 rounded-sm" />
+              <PlusIcon className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full bg-muted-foreground p-px text-background" />
+            </span>
             New playlist
           </ContextMenuItem>
           {playlists.length > 0 && <ContextMenuSeparator />}
@@ -83,13 +108,37 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: track.artistId } })}>
-        <MicVocalIcon />
-        Go to artist
-      </ContextMenuItem>
+      {soleArtist !== undefined ? (
+        <ContextMenuItem onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: soleArtist.id } })}>
+          <MicVocalIcon />
+          Go to artist
+        </ContextMenuItem>
+      ) : (
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            <MicVocalIcon />
+            Go to artist
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {track.artists.map((artist) => (
+              <ContextMenuItem
+                key={artist.id}
+                onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })}
+              >
+                {artist.name}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+      )}
       <ContextMenuItem onSelect={() => navigate({ to: '/albums/$albumId', params: { albumId: track.albumId } })}>
         <Disc3Icon />
         Go to album
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => editTrack(track)}>
+        <PencilIcon />
+        Edit details
       </ContextMenuItem>
     </>
   )

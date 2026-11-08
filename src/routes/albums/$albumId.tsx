@@ -2,12 +2,12 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { Cover } from '@/components/cover'
 import { MetaDot, PageHeader } from '@/components/page-header'
+import { PinButton } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
 import { formatLength, plural } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
-import { tint } from '@/lib/tint'
 
 export const Route = createFileRoute('/albums/$albumId')({
   params: idParam('albumId'),
@@ -27,7 +27,6 @@ function AlbumPage() {
       <PageHeader
         eyebrow="Album"
         title={album.title}
-        tint={tint(album.id)}
         art={album.cover}
         cover={<Cover src={album.cover} kind="album" />}
         meta={
@@ -49,6 +48,7 @@ function AlbumPage() {
         }
       >
         <PlayButton context={context} />
+        <PinButton target={{ kind: 'album', id: album.id }} />
       </PageHeader>
       <TrackTable tracks={tracks} context={context} />
     </>

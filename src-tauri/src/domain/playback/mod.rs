@@ -29,6 +29,17 @@ pub enum RepeatMode {
   One,
 }
 
+impl RepeatMode {
+  /// The mode the repeat button switches to: off, then the whole queue, then the one song, then off again.
+  pub fn following(self) -> Self {
+    match self {
+      Self::Off => Self::All,
+      Self::All => Self::One,
+      Self::One => Self::Off,
+    }
+  }
+}
+
 /// Where the queue was started from, so a view can tell whether the playing track belongs to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -47,6 +58,8 @@ pub struct Volume(u8);
 impl Volume {
   pub const MAX: u8 = 100;
   pub const DEFAULT: Self = Self(70);
+  /// No sound, what a muted player plays at.
+  pub const SILENT: Self = Self(0);
 
   pub fn new(percent: u8) -> Result<Self, PlaybackError> {
     if percent <= Self::MAX {

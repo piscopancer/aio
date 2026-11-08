@@ -13,10 +13,15 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-is-maximized",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "decorum:allow-show-snap-overlay",
     "dialog:allow-open",
-    "clipboard-manager:allow-read-text"
+    "clipboard-manager:allow-read-text",
+    "updater:default",
+    "process:allow-restart",
+    "opener:allow-reveal-item-in-dir"
   ]
 }

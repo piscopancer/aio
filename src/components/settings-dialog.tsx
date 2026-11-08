@@ -1,6 +1,7 @@
 import { DownloadIcon, SlidersHorizontalIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { DownloadSettings } from '@/components/download-settings'
+import { UpdateSection } from '@/components/update-section'
 import {
   Dialog,
   DialogContent,
@@ -13,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 /** Sections of the settings dialog, in the order the tab list shows them. */
 const sections = [
-  { value: 'general', label: 'General', icon: SlidersHorizontalIcon, content: Placeholder },
+  { value: 'general', label: 'General', icon: SlidersHorizontalIcon, content: UpdateSection },
   { value: 'downloads', label: 'Downloads', icon: DownloadIcon, content: DownloadSettings },
 ] as const
 
@@ -46,8 +47,4 @@ export function SettingsDialog({ children }: { children: ReactNode }) {
       </DialogContent>
     </Dialog>
   )
-}
-
-function Placeholder() {
-  return <p className="text-sm text-muted-foreground">Nothing to set here yet.</p>
 }

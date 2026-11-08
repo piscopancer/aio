@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/button'
 import { plural } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
-import { tint } from '@/lib/tint'
 
 export const Route = createFileRoute('/folders/$folderId')({
   params: idParam('folderId'),
@@ -36,7 +35,6 @@ function FolderPage() {
       <PageHeader
         eyebrow="Folder"
         title={folderName(folder.path)}
-        tint={tint(folder.id)}
         cover={<Cover src={null} kind="folder" />}
         meta={
           <>

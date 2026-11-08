@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
 import { queries } from '@/lib/query'
+import { glowOf, neutralTint } from '@/lib/tint'
 
 /** Coloured top of a detail page: artwork, kind, title and a meta line, then a fading bar for actions. */
 export function PageHeader({
@@ -10,7 +11,7 @@ export function PageHeader({
   cover,
   art = null,
   meta,
-  tint,
+  tint = neutralTint,
   onTitleClick,
   children,
 }: {
@@ -20,13 +21,13 @@ export function PageHeader({
   /** Path of the cover image; its dominant colour tints the header, and `tint` is used until it is known or when there is none. */
   art?: string | null
   meta: ReactNode
-  tint: string
+  /** Colour while the cover colour is unknown or there is no cover; neutral grey unless given. */
+  tint?: string
   onTitleClick?: (() => void) | undefined
   children?: ReactNode
 }) {
   const { data: color } = useQuery(queries.coverColor(art))
-  // the image colour at a fixed lightness, so a dark or pale cover still glows the same way
-  const glow = color == null ? tint : `oklch(from ${color} 0.55 c h)`
+  const glow = color == null ? tint : glowOf(color)
   return (
     <div
       style={{
@@ -34,7 +35,10 @@ export function PageHeader({
       }}
     >
       <header className="flex items-end gap-5 px-6 pt-10 pb-5">
-        <div className="size-[clamp(7rem,13vw,10rem)] shrink-0 shadow-2xl shadow-black/50 [&>*]:size-full">{cover}</div>
+        {/* the shadow goes on the cover itself, so a round artist picture casts a round one */}
+        <div className="size-[clamp(7rem,13vw,10rem)] shrink-0 [&>*]:size-full [&>*]:shadow-2xl [&>*]:shadow-black/50">
+          {cover}
+        </div>
         <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-sm font-medium">{eyebrow}</span>
           <h1

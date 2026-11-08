@@ -11,6 +11,10 @@ import {
 } from '@/bindings'
 import { plural } from '@/lib/format'
 import { unwrap } from '@/lib/ipc'
+import { invalidatePlaylists } from '@/lib/query'
+
+/** The whole library in its Songs order, the context of songs played from outside any page. */
+export const songsContext = { kind: 'songs' } as const satisfies PlaybackContext
 
 const initialState = await commands.getPlayerState()
 
@@ -39,6 +43,22 @@ export function useIsPlayingFrom(context: PlaybackContext) {
   return usePlayer((state) => state.context !== null && sameContext(state.context, context))
 }
 
+/** Same kind and id means the same context, whichever object the page built for it. */
+export const contextKey = (context: PlaybackContext) =>
+  'id' in context ? `${context.kind}:${context.id}` : context.kind
+
+/** Track order of each sorted song table on screen, by `contextKey`, so playing its context follows what is shown. */
+const shownOrders = new Map<string, TrackId[]>()
+
+/** Makes playing `context` follow `order` until the returned function is called, as a sorted table does while it is shown. */
+export function showOrder(context: PlaybackContext, order: TrackId[]) {
+  const key = contextKey(context)
+  shownOrders.set(key, order)
+  return () => {
+    if (shownOrders.get(key) === order) shownOrders.delete(key)
+  }
+}
+
 function report(action: Promise<unknown>) {
   action.catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
 }
@@ -46,7 +66,12 @@ function report(action: Promise<unknown>) {
 /** Player commands; outcomes arrive through `usePlayer`, failures as toasts. */
 export const player = {
   play: (context: PlaybackContext, startTrackId: TrackId | null = null) =>
-    report(unwrap(commands.play(context, startTrackId))),
+    report(
+      // a playlist played moves up among the recently played in the sidebar
+      unwrap(commands.play(context, startTrackId, shownOrders.get(contextKey(context)) ?? null)).then(async () => {
+        if (context.kind === 'playlist') await invalidatePlaylists()
+      }),
+    ),
   /** Toggles when `context` is already playing, otherwise starts it from the top. */
   playOrToggle: (context: PlaybackContext) => {
     const { context: current } = usePlayer.getState()
@@ -66,6 +91,7 @@ export const player = {
   previous: () => report(commands.previousTrack()),
   seek: (positionMs: number) => report(commands.seek(positionMs)),
   setVolume: (volume: number) => report(unwrap(commands.setVolume(volume))),
+  setMuted: (muted: boolean) => report(commands.setMuted(muted)),
   setShuffle: (shuffle: boolean) => report(commands.setShuffle(shuffle)),
   setRepeat: (repeat: RepeatMode) => report(commands.setRepeat(repeat)),
 }

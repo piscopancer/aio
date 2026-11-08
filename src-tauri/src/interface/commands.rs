@@ -7,11 +7,15 @@ use crate::application::covers::CoverService;
 use crate::application::downloads::{DownloadRequest, DownloadService};
 use crate::application::error::{AppError, AppResult};
 use crate::application::library::LibraryService;
+use crate::application::lyrics::LyricsService;
+use crate::application::pins::PinService;
 use crate::application::playback::{PlayerCommand, PlayerHandle};
 use crate::application::playlists::PlaylistService;
 use crate::application::ports::LibraryQueries;
+use crate::application::tags::{TagService, TrackEdit};
 use crate::application::views::*;
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
+use crate::domain::pins::PinTarget;
 use crate::domain::playback::{PlaybackContext, QueueKey, RepeatMode, Volume};
 use crate::domain::playlist::AddOutcome;
 
@@ -19,7 +23,10 @@ use crate::domain::playlist::AddOutcome;
 pub struct AppState {
   pub library: Arc<LibraryService>,
   pub playlists: Arc<PlaylistService>,
+  pub pins: Arc<PinService>,
   pub covers: Arc<CoverService>,
+  pub tags: Arc<TagService>,
+  pub lyrics: Arc<LyricsService>,
   pub downloads: Arc<DownloadService>,
   pub queries: Arc<dyn LibraryQueries>,
   pub player: Arc<PlayerHandle>,
@@ -165,6 +172,53 @@ pub async fn cover_color(state: Ctx<'_>, file: String) -> AppResult<String> {
   blocking(move || covers.color(&file)).await
 }
 
+/// Lyrics of a song, from its file or else looked up on LRCLIB.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_lyrics(state: Ctx<'_>, id: TrackId) -> AppResult<LyricsView> {
+  let lyrics = state.lyrics.clone();
+  blocking(move || lyrics.lyrics(id)).await
+}
+
+/// Tags of a song as the edit dialog shows them.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_tags(state: Ctx<'_>, id: TrackId) -> AppResult<TrackTags> {
+  let tags = state.tags.clone();
+  blocking(move || tags.tags(id)).await
+}
+
+/// Rewrites a song's tags; a playing song resumes where it was once its file is written.
+#[tauri::command]
+#[specta::specta]
+pub async fn edit_track(state: Ctx<'_>, id: TrackId, edit: TrackEdit) -> AppResult<()> {
+  let tags = state.tags.clone();
+  blocking(move || tags.edit(id, edit)).await
+}
+
+/// Pins a playlist, album or artist first among the pinned of its list.
+#[tauri::command]
+#[specta::specta]
+pub async fn pin(state: Ctx<'_>, target: PinTarget) -> AppResult<()> {
+  let pins = state.pins.clone();
+  blocking(move || pins.pin(target)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn unpin(state: Ctx<'_>, target: PinTarget) -> AppResult<()> {
+  let pins = state.pins.clone();
+  blocking(move || pins.unpin(target)).await
+}
+
+/// Moves a pinned item to place `to` among the pinned of its list.
+#[tauri::command]
+#[specta::specta]
+pub async fn move_pin(state: Ctx<'_>, target: PinTarget, to: u32) -> AppResult<()> {
+  let pins = state.pins.clone();
+  blocking(move || pins.move_pin(target, to)).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn delete_playlist(state: Ctx<'_>, id: PlaylistId) -> AppResult<()> {
@@ -200,12 +254,24 @@ pub fn get_player_state(state: Ctx<'_>) -> PlayerState {
   state.player.state()
 }
 
-/// Plays a view's tracks in its order, starting at `start_track_id` or at the first track.
+/// Plays a view's tracks in its order, or in `order` when the view is sorted, starting at `start_track_id` or at the first track.
 #[tauri::command]
 #[specta::specta]
-pub async fn play(state: Ctx<'_>, context: PlaybackContext, start_track_id: Option<TrackId>) -> AppResult<()> {
-  let (player, q) = (state.player.clone(), queries(&state));
-  blocking(move || player.play(q.as_ref(), context, start_track_id)).await
+pub async fn play(
+  state: Ctx<'_>,
+  context: PlaybackContext,
+  start_track_id: Option<TrackId>,
+  order: Option<Vec<TrackId>>,
+) -> AppResult<()> {
+  let (player, q, playlists) = (state.player.clone(), queries(&state), state.playlists.clone());
+  blocking(move || {
+    player.play(q.as_ref(), context, start_track_id, order.as_deref())?;
+    match context {
+      PlaybackContext::Playlist { id } => playlists.played(id),
+      _ => Ok(()),
+    }
+  })
+  .await
 }
 
 #[tauri::command]
@@ -262,6 +328,12 @@ pub fn set_volume(state: Ctx<'_>, volume: u8) -> AppResult<()> {
 #[specta::specta]
 pub fn set_shuffle(state: Ctx<'_>, shuffle: bool) {
   state.player.send(PlayerCommand::SetShuffle(shuffle));
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_muted(state: Ctx<'_>, muted: bool) {
+  state.player.send(PlayerCommand::SetMuted(muted));
 }
 
 #[tauri::command]
@@ -339,4 +411,10 @@ pub fn list_downloads(state: Ctx<'_>) -> Vec<DownloadView> {
 #[specta::specta]
 pub fn dismiss_download(state: Ctx<'_>, id: DownloadId) {
   state.downloads.dismiss(id);
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_download(state: Ctx<'_>, id: DownloadId) {
+  state.downloads.cancel(id);
 }

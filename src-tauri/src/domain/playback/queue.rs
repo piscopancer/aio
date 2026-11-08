@@ -97,6 +97,16 @@ impl<T: Clone> Queue<T> {
     self.repeat
   }
 
+  /// Swaps in the newer version `fresh` gives of an item, keeping every entry's key and place.
+  pub fn refresh(&mut self, fresh: impl Fn(&T) -> Option<T>) {
+    let original = self.unshuffled.iter_mut().flatten();
+    for entry in self.entries.iter_mut().chain(original) {
+      if let Some(item) = fresh(&entry.item) {
+        entry.item = item;
+      }
+    }
+  }
+
   /// Replaces the queue with `items` from `context`, making the one at `start` current (first when shuffled).
   pub fn start(
     &mut self,
@@ -264,6 +274,17 @@ mod tests {
 
   fn current(queue: &Queue<u32>) -> Option<u32> {
     queue.current().map(|e| *e.item())
+  }
+
+  #[test]
+  fn refreshing_keeps_keys_and_order() {
+    let mut queue = queue(&[1, 2, 3], 1, true, RepeatMode::Off);
+    let keys: Vec<_> = queue.entries().iter().map(QueueEntry::key).collect();
+    queue.refresh(|item| (*item == 2).then_some(20));
+    assert_eq!(queue.entries().iter().map(QueueEntry::key).collect::<Vec<_>>(), keys);
+    assert_eq!(current(&queue), Some(20));
+    queue.set_shuffle(false, &mut rng());
+    assert_eq!(items(&queue), vec![1, 20, 3]);
   }
 
   #[test]

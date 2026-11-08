@@ -38,3 +38,22 @@ serde_json = "1"
 url = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "webp", "png"] }
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+
+# the app's own shortcuts replace the browser ones (find, print, reload) the webview would otherwise handle
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+# the taskbar preview's player buttons: the shell API, and icons drawn from the same SVGs the app shows
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+resvg = { version = "0.45", default-features = false }

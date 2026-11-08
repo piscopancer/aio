@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Aio",
-  "version": "0.1.0",
+  "version": "../package.json",
   "identifier": "com.piscopancer.aio",
   "build": {
     "beforeDevCommand": "pnpm vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm vite build",
+    "beforeBuildCommand": "pnpm typecheck && pnpm vite build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -27,13 +27,35 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/covers/**"]
+        "scope": [
+          "$APPDATA/covers/**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEOUIyOTE5NTIzOTc2MzIKUldReWRqbFNHU21iZlk4d3VlSW1VNmpVSkpxeGtkWTdvLzFIaUVXUCsyUHdTRlJYMFZtYjV0RWEK",
+      "endpoints": [
+        "https://github.com/piscopancer/aio/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

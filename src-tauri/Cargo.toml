@@ -1,6 +1,6 @@
 [package]
 name = "aio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local music player"
 authors = ["piscopancer <piscopancer@gmail.com>"]
 edition = "2024"

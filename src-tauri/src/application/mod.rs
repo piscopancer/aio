@@ -9,5 +9,6 @@ pub mod pins;
 pub mod playback;
 pub mod playlists;
 pub mod ports;
+pub mod tag_search;
 pub mod tags;
 pub mod views;

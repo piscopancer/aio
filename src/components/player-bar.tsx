@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import {
   ListMusicIcon,
+  LocateFixedIcon,
   MicVocalIcon,
   PauseIcon,
   PlayIcon,
@@ -14,25 +15,29 @@ import {
   VolumeIcon,
   VolumeXIcon,
 } from 'lucide-react'
-import { type ComponentProps, type ReactNode, useState } from 'react'
+import { type ComponentProps, type ReactNode, useRef, useState } from 'react'
 import { VOLUME_MAX } from '@/bindings'
 import { ArtistLinks } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
+import { Marquee } from '@/components/marquee'
 import { TrackMenu } from '@/components/track-menu'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { formatClock } from '@/lib/format'
 import {
+  LOCATE_KEYS,
   LYRICS_KEYS,
   NEXT_KEYS,
   PREVIOUS_KEYS,
   MUTE_KEYS,
   REPEAT_KEYS,
+  SHUFFLE_KEYS,
   type SidePanel,
   togglePanel,
   useLayout,
 } from '@/lib/layout'
+import { useLocatePlaying } from '@/lib/locate'
 import { currentItem, nextRepeat, player, songsContext, usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
@@ -55,26 +60,40 @@ export function PlayerBar() {
   )
 }
 
-/** Current track; right-click opens the track menu, or the artist menu over the artist name. */
+/** Current track; right-click opens the track menu, or the artist menu over the artist name, and the button beside it
+ * shows the track in the list it plays from. */
 function NowPlaying() {
   const track = usePlayer((state) => currentItem(state)?.track)
+  const locatePlaying = useLocatePlaying()
   // songs added to the queue while nothing played have no view of their own; the library is theirs
   const context = usePlayer((state) => state.context) ?? songsContext
   if (track === undefined) return <div />
   return (
     <TrackMenu track={track} context={context}>
-      <div className="flex min-w-0 items-center gap-3 justify-self-start">
+      <div className="flex max-w-full min-w-0 items-center gap-3 justify-self-start pr-6">
         <Cover src={track.cover} kind="track" className="size-14" />
         <div className="flex min-w-0 flex-col">
-          <Link
-            to="/albums/$albumId"
-            params={{ albumId: track.albumId }}
-            className="truncate text-sm font-medium hover:underline"
-          >
-            {track.title}
-          </Link>
-          <ArtistLinks artists={track.artists} className="text-xs text-muted-foreground" />
+          <Marquee play="always" className="text-sm font-medium">
+            {track.albumId === null ? (
+              track.title
+            ) : (
+              <Link to="/albums/$albumId" params={{ albumId: track.albumId }} className="hover:underline">
+                {track.title}
+              </Link>
+            )}
+          </Marquee>
+          <ArtistLinks artists={track.artists} play="always" className="text-xs text-muted-foreground" />
         </div>
+        <Hint label="Jump to" keys={LOCATE_KEYS}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-subtle-foreground hover:bg-foreground/10"
+            onClick={locatePlaying}
+          >
+            <LocateFixedIcon />
+          </Button>
+        </Hint>
       </div>
     </TrackMenu>
   )
@@ -96,7 +115,7 @@ export function Transport() {
   return (
     <div className="flex flex-col items-center gap-1">
       <div className="flex items-center gap-4">
-        <Hint label={shuffle ? 'Disable shuffle' : 'Enable shuffle'}>
+        <Hint label={shuffle ? 'Disable shuffle' : 'Enable shuffle'} keys={SHUFFLE_KEYS}>
           <Button
             variant="ghost"
             size="icon"
@@ -146,22 +165,38 @@ function useDraft(value: number) {
   return [draft ?? value, setDraft, draft !== null] as const
 }
 
-/** Single-thumb slider reporting plain numbers. */
+/** Single-thumb slider reporting plain numbers; every slide that moved the value ends with `onSlideEnd`, even one that
+ * came back to where it started, which Radix does not commit. */
 function ValueSlider({
   value,
   onSlide,
   onSlideEnd,
   ...props
-}: Omit<ComponentProps<typeof Slider>, 'value' | 'onChange' | 'onValueChange' | 'onValueCommit'> & {
+}: Omit<
+  ComponentProps<typeof Slider>,
+  'value' | 'onChange' | 'onValueChange' | 'onValueCommit' | 'onLostPointerCapture'
+> & {
   value: number
   onSlide: (value: number) => void
   onSlideEnd: (value: number) => void
 }) {
+  // set while the value moved and the slide has not ended yet
+  const moved = useRef(false)
+  const end = (last: number) => {
+    moved.current = false
+    onSlideEnd(last)
+  }
   return (
     <Slider
       value={[value]}
-      onValueChange={([next]) => next !== undefined && onSlide(next)}
-      onValueCommit={([next]) => next !== undefined && onSlideEnd(next)}
+      onValueChange={([next]) => {
+        if (next === undefined) return
+        moved.current = true
+        onSlide(next)
+      }}
+      onValueCommit={([next]) => next !== undefined && end(next)}
+      // the pointer is let go only after Radix commits, so a slide not ended by then is one it left uncommitted
+      onLostPointerCapture={() => moved.current && end(value)}
       {...props}
     />
   )

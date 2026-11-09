@@ -13,13 +13,14 @@ import { type AnimationPlaybackControls, animate, motion } from 'motion/react'
 import { type ComponentProps, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import type { LyricLine, LyricsOrigin, Track } from '@/bindings'
 import { Cover } from '@/components/cover'
+import { CoverGradient } from '@/components/cover-gradient'
 import { Hint } from '@/components/hint'
+import { Marquee } from '@/components/marquee'
 import { Transport } from '@/components/player-bar'
 import { Button } from '@/components/ui/button'
-import { LYRICS_KEYS, type LyricsView, setLyricsView, togglePanel } from '@/lib/layout'
+import { FULLSCREEN_LYRICS_KEYS, LYRICS_KEYS, type LyricsView, setLyricsView, togglePanel } from '@/lib/layout'
 import { currentItem, player, usePlayer } from '@/lib/player'
 import { queries } from '@/lib/query'
-import { neutralTint } from '@/lib/tint'
 import { credit } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -33,12 +34,8 @@ type Size = keyof typeof lineText
 /** The centred band the stage lays its cover and lyrics in, as wide as both together. */
 const STAGE_BAND = 'mx-auto w-full max-w-6xl px-12'
 
-/** The playing song and the dark shade of its cover's colour the lyrics sit on. */
-function usePlayingTint() {
-  const track = usePlayer((state) => currentItem(state)?.track)
-  const { data: color } = useQuery(queries.coverColor(track?.cover ?? null))
-  return { track, background: `oklch(from ${color ?? neutralTint} 0.3 calc(c * 0.7) h)` }
-}
+/** The playing song, whose lyrics are shown on the flowing colours of its cover. */
+const usePlayingTrack = () => usePlayer((state) => currentItem(state)?.track)
 
 /** How long the mouse rests before the full-screen lyrics hide their controls and the pointer. */
 const IDLE_MS = 3000
@@ -83,7 +80,7 @@ function ViewButtons({ view }: { view: LyricsView }) {
           <Minimize2Icon />
         </StageButton>
       ) : (
-        <StageButton label="Full screen" onClick={() => setLyricsView('fullscreen')}>
+        <StageButton label="Full screen" keys={FULLSCREEN_LYRICS_KEYS} onClick={() => setLyricsView('fullscreen')}>
           <Maximize2Icon />
         </StageButton>
       )}
@@ -96,13 +93,11 @@ function ViewButtons({ view }: { view: LyricsView }) {
 
 /** Right panel with the lyrics of the playing song, following the song line by line when they are timed. */
 export function LyricsPanel() {
-  const { track, background } = usePlayingTint()
+  const track = usePlayingTrack()
 
   return (
-    <aside
-      className="flex w-105 shrink-0 flex-col overflow-hidden rounded-lg transition-[background-color] duration-700"
-      style={{ backgroundColor: background }}
-    >
+    <aside className="relative isolate flex w-105 shrink-0 flex-col overflow-hidden rounded-lg">
+      <CoverGradient cover={track?.cover ?? null} />
       <header className="flex items-center justify-between px-4 py-3">
         <h2 className="font-bold">Lyrics</h2>
         <ViewButtons view="panel" />
@@ -189,7 +184,7 @@ function Stage({
   className: string
   children?: ReactNode
 }) {
-  const { track, background } = usePlayingTint()
+  const track = usePlayingTrack()
   // the cover and title stand beside the lyrics only on the full screen, as the player bar shows them otherwise
   const size = view === 'fullscreen' ? 'stage' : 'wide'
 
@@ -202,11 +197,8 @@ function Stage({
   }, [])
 
   return (
-    <div
-      onMouseMove={onMouseMove}
-      className={cn('flex overflow-hidden transition-[background-color] duration-700', className)}
-      style={{ backgroundColor: background }}
-    >
+    <div onMouseMove={onMouseMove} className={cn('isolate flex overflow-hidden', className)}>
+      <CoverGradient cover={track?.cover ?? null} />
       <div
         className={cn(
           'absolute top-3 right-3 z-10 transition-opacity duration-300',
@@ -229,8 +221,14 @@ function Stage({
                 <div className="pointer-events-auto flex w-2/5 flex-col gap-6">
                   <Cover src={track.cover} kind="track" className="aspect-square size-auto w-full shadow-2xl" />
                   <div className="flex min-w-0 flex-col gap-1">
-                    <span className="truncate text-3xl font-bold">{track.title}</span>
-                    <span className="truncate text-xl text-foreground/70">{credit(track.artists)}</span>
+                    <Marquee play="always" className="text-3xl font-bold">
+                      {track.title}
+                    </Marquee>
+                    {track.artists.length > 0 && (
+                      <Marquee play="always" className="text-xl text-foreground/70">
+                        {credit(track.artists)}
+                      </Marquee>
+                    )}
                   </div>
                 </div>
               </div>

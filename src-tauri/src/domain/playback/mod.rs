@@ -1,8 +1,8 @@
 mod policy;
 mod queue;
 
-pub use policy::Previous;
-pub use queue::{Advance, Queue, QueueEntry, QueueKey, Removal};
+pub use policy::{Previous, resume_point};
+pub use queue::{Advance, Queue, QueueEntry, QueueKey, QueueSnapshot, Removal};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;

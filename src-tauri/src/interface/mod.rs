@@ -4,4 +4,6 @@ pub mod cli;
 pub mod commands;
 pub mod events;
 #[cfg(windows)]
+pub mod media_session;
+#[cfg(windows)]
 pub mod taskbar;

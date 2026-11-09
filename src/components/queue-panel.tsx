@@ -4,6 +4,7 @@ import type { QueueItem } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { Equalizer } from '@/components/equalizer'
 import { Hint } from '@/components/hint'
+import { Marquee } from '@/components/marquee'
 import { Button } from '@/components/ui/button'
 import { togglePanel } from '@/lib/layout'
 import { currentItem, player, usePlayer } from '@/lib/player'
@@ -20,7 +21,7 @@ export function QueuePanel() {
   const index = usePlayer((state) => state.index)
   const queue = usePlayer((state) => state.queue)
   const upcoming = index === null ? [] : queue.slice(index + 1)
-  const { listRef, virtualizer } = useListVirtualizer(scrollElement, upcoming.length, ROW_HEIGHT)
+  const { listRef, items, totalSize, scrollMargin } = useListVirtualizer(scrollElement, upcoming.length, ROW_HEIGHT)
 
   return (
     <aside ref={setScrollElement} className="w-80 shrink-0 overflow-y-auto rounded-lg bg-surface">
@@ -44,15 +45,15 @@ export function QueuePanel() {
             {upcoming.length > 0 && <h3 className="px-4 pt-4 pb-1 font-semibold">Next up</h3>}
           </>
         )}
-        <div ref={listRef} className="relative mx-2 mb-2" style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((row) => {
+        <div ref={listRef} className="relative mx-2 mb-2" style={{ height: totalSize }}>
+          {items.map((row) => {
             const item = upcoming[row.index]
             if (item === undefined) return null
             return (
               <div
                 key={item.key}
                 className="absolute top-0 left-0 w-full"
-                style={{ transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)` }}
+                style={{ transform: `translateY(${row.start - scrollMargin}px)` }}
               >
                 <QueueRow item={item} />
               </div>
@@ -76,8 +77,10 @@ const QueueRow = memo(function QueueRow({ item, current = false }: { item: Queue
     >
       <Cover src={track.cover} kind="track" className="size-12" />
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className={cn('truncate', current && 'text-primary')}>{track.title}</span>
-        <span className="truncate text-sm text-muted-foreground">{credit(track.artists)}</span>
+        <Marquee className={cn(current && 'text-primary')}>{track.title}</Marquee>
+        {track.artists.length > 0 && (
+          <Marquee className="text-sm text-muted-foreground">{credit(track.artists)}</Marquee>
+        )}
       </div>
       {isPlaying && <Equalizer className="mr-2" />}
       {!current && (

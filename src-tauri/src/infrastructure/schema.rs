@@ -4,7 +4,7 @@ diesel::table! {
   albums (id) {
     id -> Integer,
     title -> Text,
-    artist_id -> Integer,
+    artist_id -> Nullable<Integer>,
     year -> Nullable<Integer>,
     cover -> Nullable<Text>,
     pin -> Nullable<Integer>,
@@ -44,6 +44,14 @@ diesel::table! {
 }
 
 diesel::table! {
+  player_session (id) {
+    id -> Integer,
+    queue -> Text,
+    position_ms -> Integer,
+  }
+}
+
+diesel::table! {
   playlist_tracks (playlist_id, track_id) {
     playlist_id -> Integer,
     track_id -> Integer,
@@ -76,12 +84,14 @@ diesel::table! {
     folder_id -> Nullable<Integer>,
     path -> Text,
     title -> Text,
-    artist_id -> Integer,
-    album_id -> Integer,
+    artist_id -> Nullable<Integer>,
+    album_id -> Nullable<Integer>,
     track_no -> Nullable<Integer>,
     disc_no -> Nullable<Integer>,
     duration_ms -> Integer,
     modified -> BigInt,
+    genre -> Nullable<Text>,
+    cover -> Nullable<Text>,
   }
 }
 
@@ -114,6 +124,7 @@ diesel::allow_tables_to_appear_in_same_query!(
   folders,
   lyrics,
   playback_settings,
+  player_session,
   playlist_tracks,
   playlists,
   track_artists,

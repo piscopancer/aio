@@ -19,6 +19,7 @@ export const commands = {
   listAlbums: () => typedError<Album[], AppError>(__TAURI_INVOKE("list_albums")),
   getAlbum: (id: AlbumId) => typedError<AlbumDetail, AppError>(__TAURI_INVOKE("get_album", { id })),
   listArtists: () => typedError<Artist[], AppError>(__TAURI_INVOKE("list_artists")),
+  listGenres: () => typedError<Genre[], AppError>(__TAURI_INVOKE("list_genres")),
   getArtist: (id: ArtistId) => typedError<ArtistDetail, AppError>(__TAURI_INVOKE("get_artist", { id })),
   listPlaylists: () => typedError<Playlist[], AppError>(__TAURI_INVOKE("list_playlists")),
   getPlaylist: (id: PlaylistId) => typedError<PlaylistDetail, AppError>(__TAURI_INVOKE("get_playlist", { id })),
@@ -29,6 +30,15 @@ export const commands = {
   importCover: (file: string) => typedError<string, AppError>(__TAURI_INVOKE("import_cover", { file })),
   /**  The colour that covers most of the image at `file`, as `#rrggbb`, which pages tint their header with. */
   coverColor: (file: string) => typedError<string, AppError>(__TAURI_INVOKE("cover_color", { file })),
+  /**
+  *  A few harmonious colours of the image at `file`, as `#rrggbb`, strongest first, which the lyrics background flows
+  *  with.
+  */
+  coverPalette: (file: string) => typedError<string[], AppError>(__TAURI_INVOKE("cover_palette", { file })),
+  /**  Variants of a song's tags and covers from online music databases, looked up by the tags the edit form holds now. */
+  searchTags: (id: TrackId, query: TagSearchQuery) => typedError<TagSearch, AppError>(__TAURI_INVOKE("search_tags", { id, query })),
+  /**  Downloads a cover the tag search found and stores it, returning its path for the edit form to set. */
+  importFoundCover: (url: string) => typedError<string, AppError>(__TAURI_INVOKE("import_found_cover", { url })),
   /**  Tags of a song as the edit dialog shows them. */
   trackTags: (id: TrackId) => typedError<TrackTags, AppError>(__TAURI_INVOKE("track_tags", { id })),
   /**  Rewrites a song's tags; a playing song resumes where it was once its file is written. */
@@ -92,10 +102,6 @@ export const PLAYLIST_NAME_MAX_CHARS = 100 as const;
 
 export const TRACK_NUMBER_MAX = 999 as const;
 
-export const UNKNOWN_ALBUM = "Unknown Album" as const;
-
-export const UNKNOWN_ARTIST = "Unknown Artist" as const;
-
 export const VOLUME_MAX = 100 as const;
 
 /* Types */
@@ -108,8 +114,9 @@ export type AddOutcome = {
 export type Album = {
   id: AlbumId,
   title: string,
-  artistId: ArtistId,
-  artist: string,
+  /**  The artist the album is filed under; an album whose files name no artist belongs to nobody. */
+  artistId: ArtistId | null,
+  artist: string | null,
   year: number | null,
   cover: string | null,
   trackCount: number,
@@ -251,6 +258,18 @@ export type FolderDetail = {
 /**  A folder of the library. */
 export type FolderId = number;
 
+/**  A cover a database has for a found song, as a small picture to show and a large one to keep. */
+export type FoundCover = {
+  thumb: string,
+  full: string,
+};
+
+/**  A genre some songs of the library name, as their files spell it. */
+export type Genre = {
+  name: string,
+  trackCount: number,
+};
+
 /**  Tracks, albums or artists changed, so every library view is stale. */
 export type LibraryChanged = null;
 
@@ -374,6 +393,50 @@ export type Service = "youtube" | "youtubeMusic" | "spotify";
 
 export type TagError = { type: "titleEmpty" } | { type: "artistEmpty" } | { type: "yearInvalid" } | { type: "numberInvalid"; max: number };
 
+/**  The tags one database gives a song; whatever it does not know is missing. */
+export type TagMatch = {
+  source: TagSource,
+  title: string,
+  /**  The credited artists in order, the main one first. */
+  artists: string[],
+  album: string | null,
+  year: number | null,
+  trackNo: number | null,
+  discNo: number | null,
+  genre: string | null,
+  /**  The length of the found recording, when the database tells it. */
+  durationMs: number | null,
+  cover: FoundCover | null,
+};
+
+/**  What an online search for a song's tags found, best first, and the databases that could not be asked. */
+export type TagSearch = {
+  matches: TagMatch[],
+  failed: TagSource[],
+};
+
+/**
+*  What the edit dialog asks the databases about: the title and artists in its form as they are now, which may differ
+*  from the file's.
+*/
+export type TagSearchQuery = {
+  title: string,
+  artists: string[],
+};
+
+/**  An online music database the tag search asks. */
+export type TagSource = 
+/**  AcoustID, which recognises the recording by its sound and names it as MusicBrainz does. */
+"acoustId" | "musicBrainz" | 
+/**  The iTunes store of Russia, whose names keep their own script. */
+"itunesRu" | 
+/**  The iTunes store of the United States, whose names are mostly in Latin letters. */
+"itunesUs" | "deezer" | 
+/**  Bandcamp, where artists and small labels sell their own music. */
+"bandcamp" | 
+/**  YouTube Music, whose songs are releases and whose videos are uploads. */
+"youtubeMusic";
+
 /**  The command line programs downloads need, by name. */
 export type Tool = "ytDlp" | "ffmpeg" | "deno";
 
@@ -406,10 +469,12 @@ export type Track = {
   id: TrackId,
   path: string,
   title: string,
-  /**  The credited artists in order, the main one first; never empty. */
+  /**  The credited artists in order, the main one first; empty when the file names none. */
   artists: ArtistName[],
-  albumId: AlbumId,
-  album: string,
+  /**  The album the song is on; a song whose file names none is on no album. */
+  albumId: AlbumId | null,
+  album: string | null,
+  /**  Its album's cover, or the cover of its own file when it is on no album. */
   cover: string | null,
   trackNo: number | null,
   discNo: number | null,

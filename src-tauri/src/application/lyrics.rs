@@ -9,7 +9,6 @@ use super::ports::{LibraryQueries, LyricsFind, LyricsFinder, LyricsQuery, Lyrics
 use super::views::{LyricLine, LyricWord, LyricsOrigin, LyricsView};
 use crate::domain::ids::TrackId;
 use crate::domain::lyrics::{Lyrics, same_recording};
-use crate::domain::tags::{UNKNOWN_ALBUM, UNKNOWN_ARTIST};
 
 /// How long a song LRCLIB had no lyrics for is not asked about again.
 const MISSING_RETRY_SECS: i64 = 24 * 60 * 60;
@@ -89,12 +88,8 @@ impl LyricsService {
     let found = self.finder.find(&LyricsQuery {
       title: &track.title,
       // sites file a song under its main artist, the guests going into the title
-      artist: track
-        .artists
-        .first()
-        .map(|artist| artist.name.as_str())
-        .filter(|name| *name != UNKNOWN_ARTIST),
-      album: (track.album != UNKNOWN_ALBUM).then_some(track.album.as_str()),
+      artist: track.artists.first().map(|artist| artist.name.as_str()),
+      album: track.album.as_deref(),
       duration_ms: track.duration_ms,
     })?;
     let record = LyricsRecord {

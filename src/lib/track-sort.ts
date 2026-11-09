@@ -37,7 +37,9 @@ const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: tr
 const ascending = {
   title: (a, b) => collator.compare(a.title, b.title),
   album: (a, b) =>
-    collator.compare(a.album, b.album) || (a.discNo ?? 0) - (b.discNo ?? 0) || (a.trackNo ?? 0) - (b.trackNo ?? 0),
+    collator.compare(a.album ?? '', b.album ?? '') ||
+    (a.discNo ?? 0) - (b.discNo ?? 0) ||
+    (a.trackNo ?? 0) - (b.trackNo ?? 0),
   duration: (a, b) => a.durationMs - b.durationMs,
 } satisfies Record<TrackSortKey, (a: Track, b: Track) => number>
 

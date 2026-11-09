@@ -14,7 +14,7 @@ use crate::domain::download::{AudioQuality, Candidate, VideoFacts};
 use crate::domain::ids::{AlbumId, ArtistId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{PlaybackContext, RepeatMode, Volume};
+use crate::domain::playback::{PlaybackContext, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 use crate::domain::tags::SongTags;
 
@@ -45,20 +45,27 @@ pub trait CoverImages: Send + Sync {
   /// Copies the image at `file` into the app's covers as a square, returning the stored copy's path.
   fn import(&self, file: &Path) -> AppResult<String>;
   /// The colour that covers most of the image at `file`, ignoring greys unless it has nothing else, as `#rrggbb`.
+  /// Stores a square copy of an image given as the bytes of its file, returning the stored copy's path.
+  fn import_bytes(&self, data: &[u8]) -> AppResult<String>;
   fn dominant_color(&self, file: &Path) -> AppResult<String>;
+  /// A few colours of the image at `file` that sit well together and carry white text, strongest first, as `#rrggbb`.
+  fn palette(&self, file: &Path) -> AppResult<Vec<String>>;
 }
 
 /// Tag data of one audio file, as read during a scan.
 pub struct ScannedTrack {
   pub path: String,
   pub title: String,
-  pub artists: Artists,
-  pub album: String,
-  /// The album artist the file names, or else its main artist.
-  pub album_artist: String,
+  /// The credited artists; a song whose file names none is credited to nobody.
+  pub artists: Option<Artists>,
+  /// The album the file names; a song without one belongs to no album.
+  pub album: Option<String>,
+  /// The album artist the file names, or else its main artist; none when the file names no artist at all.
+  pub album_artist: Option<String>,
   pub year: Option<u32>,
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
+  pub genre: Option<String>,
   pub duration_ms: u32,
   pub modified: i64,
   pub cover: Option<String>,
@@ -124,6 +131,8 @@ pub trait LibraryQueries: Send + Sync {
   fn albums(&self) -> AppResult<Vec<Album>>;
   fn album(&self, id: AlbumId) -> AppResult<AlbumDetail>;
   fn artists(&self) -> AppResult<Vec<Artist>>;
+  /// The genres the library's songs name, the most common first.
+  fn genres(&self) -> AppResult<Vec<Genre>>;
   fn artist(&self, id: ArtistId) -> AppResult<ArtistDetail>;
   fn playlists(&self) -> AppResult<Vec<Playlist>>;
   fn playlist(&self, id: PlaylistId) -> AppResult<PlaylistDetail>;
@@ -147,9 +156,22 @@ pub struct PlaybackSettings {
   pub repeat: RepeatMode,
 }
 
+/// What the player was doing when the app last ran: its queue, each song named by its id, and the position in the
+/// current song.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSession {
+  pub queue: QueueSnapshot<TrackId>,
+  pub position_ms: u32,
+}
+
 pub trait SettingsStore: Send + Sync {
   fn playback_settings(&self) -> PlaybackSettings;
   fn save_playback_settings(&self, settings: PlaybackSettings) -> AppResult<()>;
+  /// The session saved last, if there is one that can still be read.
+  fn player_session(&self) -> Option<PlayerSession>;
+  fn save_player_session(&self, session: &PlayerSession) -> AppResult<()>;
+  /// Moves the saved session to another position in its song, leaving its queue as it is.
+  fn save_player_position(&self, position_ms: u32) -> AppResult<()>;
 }
 
 /// The sound device; implementations live on the audio thread and need not be `Send`.
@@ -296,4 +318,34 @@ pub trait LyricsStore: Send + Sync {
   fn save_lyrics_record(&self, track: TrackId, record: &LyricsRecord) -> AppResult<()>;
   fn unwritten_lyrics(&self) -> AppResult<Vec<UnwrittenLyrics>>;
   fn mark_lyrics_written(&self, track: TrackId) -> AppResult<()>;
+}
+
+/// What a song is looked up by in the online music databases: the title and main artist it is known by now, its file
+/// and its length. The album is left out, as a wrong one would hide the song from every search.
+pub struct SongLookup<'a> {
+  pub title: &'a str,
+  pub artist: Option<&'a str>,
+  pub path: &'a Path,
+  pub duration_ms: u32,
+}
+
+impl SongLookup<'_> {
+  /// The artist and title as the plain words of a search that takes them in one line.
+  pub fn words(&self) -> String {
+    self
+      .artist
+      .map_or_else(|| self.title.to_owned(), |artist| format!("{artist} {}", self.title))
+  }
+}
+
+/// One online music database that finds the tags of a song.
+pub trait TagFinder: Send + Sync {
+  fn source(&self) -> TagSource;
+  /// The songs the database takes this one for, best first.
+  fn find(&self, song: &SongLookup<'_>) -> AppResult<Vec<TagMatch>>;
+}
+
+pub trait WebImages: Send + Sync {
+  /// The bytes of the image file at `url`.
+  fn fetch(&self, url: &str) -> AppResult<Vec<u8>>;
 }

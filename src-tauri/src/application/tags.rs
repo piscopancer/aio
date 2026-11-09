@@ -67,7 +67,10 @@ impl TagService {
   pub fn tags(&self, id: TrackId) -> AppResult<TrackTags> {
     let track = self.track(id)?;
     let tags = self.songs.tags(Path::new(&track.path))?;
-    let album = self.queries.album(track.album_id)?.album;
+    let Some(album_id) = track.album_id else {
+      return Ok(tags);
+    };
+    let album = self.queries.album(album_id)?.album;
     Ok(TrackTags {
       year: album_year(&album).or(tags.year),
       ..tags
@@ -81,7 +84,7 @@ impl TagService {
     let before = self.songs.tags(Path::new(&track.path))?;
     let tags = SongTags::edited(
       &edit.title,
-      // no artists clears the tag, and the song goes under the unknown artist
+      // no artists clears the tag, and the song is credited to nobody
       (!edit.artists.is_empty())
         .then(|| Artists::new(&edit.artists))
         .transpose()?,
@@ -109,12 +112,19 @@ impl TagService {
   }
 
   fn plan(&self, track: &Track, tags: SongTags, cover: CoverChange) -> AppResult<Rewrite> {
-    let (title, owner) = tags.album_key();
+    // a song on no album shares its cover and year with no other song
+    let Some((title, owner)) = tags.album_key() else {
+      return Ok(Rewrite {
+        tags,
+        cover,
+        siblings: Vec::new(),
+      });
+    };
     let albums = self.queries.albums()?;
     let target = albums
       .iter()
-      .find(|album| album.title == title && album.artist == owner);
-    let plan = match (album_move(track.album_id, target.map(|album| album.id)), target) {
+      .find(|album| album.title == title && album.artist.as_deref() == owner);
+    let plan = match (album_move(track.album_id, target.map(|album| Some(album.id))), target) {
       (AlbumMove::Joins(_), Some(album)) => Rewrite {
         tags: tags.with_year(album_year(album)),
         cover: album_cover(album),

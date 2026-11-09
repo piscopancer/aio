@@ -44,6 +44,7 @@ export function TrackMenu({ children, ...props }: TrackMenuProps & { children: R
 
 /** Mounted only while the menu is open, so closed rows run no queries. */
 function TrackMenuItems({ track, context }: TrackMenuProps) {
+  const { albumId } = track
   const navigate = useNavigate()
   // one artist is a plain item, several get a submenu to pick from
   const soleArtist = track.artists.length === 1 ? track.artists[0] : undefined
@@ -114,27 +115,32 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
           Go to artist
         </ContextMenuItem>
       ) : (
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <MicVocalIcon />
-            Go to artist
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            {track.artists.map((artist) => (
-              <ContextMenuItem
-                key={artist.id}
-                onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })}
-              >
-                {artist.name}
-              </ContextMenuItem>
-            ))}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+        // a song credited to nobody has no artist to go to
+        track.artists.length > 1 && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <MicVocalIcon />
+              Go to artist
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {track.artists.map((artist) => (
+                <ContextMenuItem
+                  key={artist.id}
+                  onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })}
+                >
+                  {artist.name}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )
       )}
-      <ContextMenuItem onSelect={() => navigate({ to: '/albums/$albumId', params: { albumId: track.albumId } })}>
-        <Disc3Icon />
-        Go to album
-      </ContextMenuItem>
+      {albumId !== null && (
+        <ContextMenuItem onSelect={() => navigate({ to: '/albums/$albumId', params: { albumId } })}>
+          <Disc3Icon />
+          Go to album
+        </ContextMenuItem>
+      )}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => editTrack(track)}>
         <PencilIcon />

@@ -6,6 +6,14 @@ use super::queue::Advance;
 /// Pressing "previous" later than this into a track restarts it instead of going back.
 pub const RESTART_AFTER: Duration = Duration::from_secs(3);
 
+/// How far before the saved place a song restored after a restart resumes, so the listener catches the moment again.
+pub const RESUME_REWIND: Duration = Duration::from_secs(3);
+
+/// Where a song restored after a restart resumes when playback stopped at `stopped`.
+pub fn resume_point(stopped: Duration) -> Duration {
+  stopped.saturating_sub(RESUME_REWIND)
+}
+
 /// Which entry plays after `current`, or `None` when playback reaches the end of the queue.
 pub fn next_index(repeat: RepeatMode, current: usize, len: usize, reason: Advance) -> Option<usize> {
   match (repeat, reason) {

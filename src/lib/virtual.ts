@@ -7,7 +7,9 @@ export const ScrollContainerContext = createContext<HTMLElement | null>(null)
 /** Space between the rows of a list, in pixels, so neighbouring highlighted rows never touch; `gap-1` in the lists that are not virtualized. */
 export const ROW_GAP = 4
 
-/** Virtualizes a list that sits somewhere inside `scrollElement`, below content of any height. */
+/** Virtualizes a list that sits somewhere inside `scrollElement`, below content of any height. It hands out the rows
+ * and sizes as plain values rather than the virtualizer itself: the virtualizer is one object that changes inside, so
+ * React Compiler, which memoizes on identity, would keep the rows a component first read from it forever. */
 export function useListVirtualizer(scrollElement: HTMLElement | null, count: number, rowHeight: number) {
   const listRef = useRef<HTMLDivElement>(null)
   const [scrollMargin, setScrollMargin] = useState(0)
@@ -36,7 +38,14 @@ export function useListVirtualizer(scrollElement: HTMLElement | null, count: num
     useFlushSync: false,
     scrollMargin,
   })
-  return { listRef, virtualizer }
+  return {
+    listRef,
+    items: virtualizer.getVirtualItems(),
+    totalSize: virtualizer.getTotalSize(),
+    scrollMargin,
+    /** Scrolls the row at `index` to the middle of the scrolling view. */
+    centerRow: (index: number) => virtualizer.scrollToIndex(index, { align: 'center' }),
+  }
 }
 
 /** Virtualizes a list inside the main view. */

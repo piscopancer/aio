@@ -11,7 +11,8 @@ import { plural } from '@/lib/format'
 type CardProps = Omit<ComponentProps<typeof MediaCard>, 'cover' | 'title' | 'subtitle' | 'context' | 'link' | 'pinned'>
 
 export function AlbumCard({ album, showArtist = true, ...props }: { album: Album; showArtist?: boolean } & CardProps) {
-  const parts = [album.year === null ? undefined : String(album.year), showArtist ? album.artist : 'Album']
+  // an album of nobody names its kind where the artist would be
+  const parts = [album.year === null ? undefined : String(album.year), (showArtist && album.artist) || 'Album']
   return (
     <AlbumMenu albumId={album.id}>
       <MediaCard

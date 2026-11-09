@@ -7,15 +7,15 @@ use std::sync::{Mutex, MutexGuard};
 
 use diesel::connection::SimpleConnection;
 use diesel::dsl::{count, sum};
-use diesel::helper_types::{InnerJoin, IsNotNull, IsNull};
+use diesel::helper_types::{IsNotNull, IsNull, LeftJoin};
 use diesel::prelude::*;
 use diesel::result::{ConnectionError, Error as DieselError};
 use diesel::sqlite::Sqlite;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use super::schema::{
-  albums, artists, download_settings, folders, lyrics, playback_settings, playlist_tracks, playlists, track_artists,
-  tracks,
+  albums, artists, download_settings, folders, lyrics, playback_settings, player_session, playlist_tracks, playlists,
+  track_artists, tracks,
 };
 use crate::application::error::{AppError, AppResult};
 use crate::application::ports::*;
@@ -23,7 +23,7 @@ use crate::application::views::*;
 use crate::domain::ids::{AlbumId, ArtistId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{RepeatMode, Volume};
+use crate::domain::playback::{QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 
 /// Files of `src-tauri/migrations`, compiled in and applied at startup.
@@ -114,10 +114,12 @@ struct TrackRow {
   id: i32,
   path: String,
   title: String,
-  album_id: i32,
-  #[diesel(select_expression = albums::title)]
-  album: String,
-  #[diesel(select_expression = albums::cover)]
+  album_id: Option<i32>,
+  #[diesel(select_expression = albums::title.nullable())]
+  album: Option<String>,
+  #[diesel(select_expression = albums::cover.nullable())]
+  album_cover: Option<String>,
+  /// The cover of the song's own file.
   cover: Option<String>,
   track_no: Option<i32>,
   disc_no: Option<i32>,
@@ -138,9 +140,14 @@ impl TrackRow {
       path: self.path,
       title: self.title,
       artists,
-      album_id: AlbumId(stored(self.album_id)?),
+      album_id: self.album_id.map(stored).transpose()?.map(AlbumId),
       album: self.album,
-      cover: self.cover,
+      // the album's cover is the one its songs share; a song of no album shows its own
+      cover: if self.album_id.is_some() {
+        self.album_cover
+      } else {
+        self.cover
+      },
       track_no: stored_opt(self.track_no)?,
       disc_no: stored_opt(self.disc_no)?,
       duration_ms: stored(self.duration_ms)?,
@@ -182,22 +189,17 @@ fn tracks_from(conn: &mut SqliteConnection, rows: Vec<TrackRow>) -> AppResult<Ve
     .collect()
 }
 
-/// Tracks with their main artist and album, the source of every `TrackRow`; the main artist only sorts them.
-type TrackSource = InnerJoin<InnerJoin<tracks::table, artists::table>, albums::table>;
+/// Tracks with their main artist and album, if any, the source of every `TrackRow`; the main artist only sorts them.
+type TrackSource = LeftJoin<LeftJoin<tracks::table, artists::table>, albums::table>;
 
 fn track_source() -> TrackSource {
-  tracks::table.inner_join(artists::table).inner_join(albums::table)
+  tracks::table.left_join(artists::table).left_join(albums::table)
 }
 
-/// Order of library-wide track lists: by artist, then album, then position on the album.
-const LIBRARY_ORDER: (
-  artists::name,
-  albums::year,
-  albums::title,
-  tracks::disc_no,
-  tracks::track_no,
-  tracks::title,
-) = (
+/// Order of library-wide track lists: by artist, the songs credited to nobody last, then album, then position on the
+/// album.
+type LibraryOrder = (
+  IsNull<artists::name>,
   artists::name,
   albums::year,
   albums::title,
@@ -206,14 +208,26 @@ const LIBRARY_ORDER: (
   tracks::title,
 );
 
+fn library_order() -> LibraryOrder {
+  (
+    artists::name.is_null(),
+    artists::name,
+    albums::year,
+    albums::title,
+    tracks::disc_no,
+    tracks::track_no,
+    tracks::title,
+  )
+}
+
 #[derive(Queryable, Selectable)]
 #[diesel(table_name = albums, check_for_backend(Sqlite))]
 struct AlbumRow {
   id: i32,
   title: String,
-  artist_id: i32,
-  #[diesel(select_expression = artists::name)]
-  artist: String,
+  artist_id: Option<i32>,
+  #[diesel(select_expression = artists::name.nullable())]
+  artist: Option<String>,
   year: Option<i32>,
   cover: Option<String>,
   pin: Option<i32>,
@@ -234,12 +248,14 @@ struct NewTrack<'a> {
   folder_id: Option<i32>,
   path: &'a str,
   title: &'a str,
-  artist_id: i32,
-  album_id: i32,
+  artist_id: Option<i32>,
+  album_id: Option<i32>,
   track_no: Option<i32>,
   disc_no: Option<i32>,
   duration_ms: i32,
   modified: i64,
+  genre: Option<&'a str>,
+  cover: Option<&'a str>,
 }
 
 #[derive(Queryable, Selectable, Insertable, AsChangeset)]
@@ -335,7 +351,7 @@ impl SqliteStore {
   fn load_albums(&self, scope: AlbumScope) -> AppResult<Vec<Album>> {
     let conn = &mut *self.conn();
     let query = albums::table
-      .inner_join(artists::table)
+      .left_join(artists::table)
       .select(AlbumRow::as_select())
       .into_boxed();
     let query = match scope {
@@ -345,14 +361,15 @@ impl SqliteStore {
         .filter(albums::artist_id.eq(id))
         .order((albums::year.desc(), albums::title)),
       AlbumScope::AppearsOn(id) => query
-        .filter(albums::artist_id.ne(id))
+        .filter(albums::artist_id.is_not(id))
         .filter(
           albums::id.eq_any(
             tracks::table
               .inner_join(track_artists::table)
               .filter(track_artists::artist_id.eq(id))
               .filter(present())
-              .select(tracks::album_id),
+              .filter(tracks::album_id.is_not_null())
+              .select(tracks::album_id.assume_not_null()),
           ),
         )
         .order((albums::year.desc(), albums::title)),
@@ -361,8 +378,13 @@ impl SqliteStore {
     let totals = totals_by(
       tracks::table
         .filter(present())
+        .filter(tracks::album_id.is_not_null())
         .group_by(tracks::album_id)
-        .select((tracks::album_id, count(tracks::id), sum(tracks::duration_ms)))
+        .select((
+          tracks::album_id.assume_not_null(),
+          count(tracks::id),
+          sum(tracks::duration_ms),
+        ))
         .load(conn)?,
     )?;
     let listing = !matches!(scope, AlbumScope::One(_));
@@ -375,7 +397,7 @@ impl SqliteStore {
         Ok(Album {
           id: AlbumId(stored(row.id)?),
           title: row.title,
-          artist_id: ArtistId(stored(row.artist_id)?),
+          artist_id: row.artist_id.map(stored).transpose()?.map(ArtistId),
           artist: row.artist,
           year: stored_opt(row.year)?,
           cover: row.cover,
@@ -408,17 +430,20 @@ impl SqliteStore {
       .into_iter()
       .collect();
     let album_counts: HashMap<i32, i64> = albums::table
+      .filter(albums::artist_id.is_not_null())
       .group_by(albums::artist_id)
-      .select((albums::artist_id, count(albums::id)))
+      .select((albums::artist_id.assume_not_null(), count(albums::id)))
       .load(conn)?
       .into_iter()
       .collect();
-    // the newest album with art stands for the artist, or else the newest one they sing on as a guest
+    // the newest album with art stands for the artist, or else the newest one they sing on as a guest, or else a song
+    // of theirs that is on no album
     let covers = first_per_key(
       albums::table
+        .filter(albums::artist_id.is_not_null())
         .filter(albums::cover.is_not_null())
         .order(albums::year.desc())
-        .select((albums::artist_id, albums::cover.assume_not_null()))
+        .select((albums::artist_id.assume_not_null(), albums::cover.assume_not_null()))
         .load::<(i32, String)>(conn)?,
     );
     let guest_covers = first_per_key(
@@ -427,6 +452,14 @@ impl SqliteStore {
         .filter(albums::cover.is_not_null())
         .order(albums::year.desc())
         .select((track_artists::artist_id, albums::cover.assume_not_null()))
+        .load::<(i32, String)>(conn)?,
+    );
+    let own_covers = first_per_key(
+      track_artists::table
+        .inner_join(tracks::table)
+        .filter(tracks::album_id.is_null())
+        .filter(tracks::cover.is_not_null())
+        .select((track_artists::artist_id, tracks::cover.assume_not_null()))
         .load::<(i32, String)>(conn)?,
     );
     rows
@@ -439,7 +472,11 @@ impl SqliteStore {
         Ok(Artist {
           id: ArtistId(stored(id)?),
           name,
-          cover: covers.get(&id).or_else(|| guest_covers.get(&id)).cloned(),
+          cover: covers
+            .get(&id)
+            .or_else(|| guest_covers.get(&id))
+            .or_else(|| own_covers.get(&id))
+            .cloned(),
           album_count: stored(album_counts.get(&id).copied().unwrap_or_default())?,
           track_count: stored(track_count)?,
           pin: stored_opt(pin)?,
@@ -476,14 +513,23 @@ impl SqliteStore {
         ))
         .load(conn)?,
     )?;
-    // the art of the first track that has any stands for the playlist
+    // the art of the first track that has any stands for the playlist: its album's, or its own when it is on none
     let covers = first_per_key(
       playlist_tracks::table
-        .inner_join(tracks::table.inner_join(albums::table))
-        .filter(albums::cover.is_not_null())
+        .inner_join(tracks::table.left_join(albums::table))
         .order((playlist_tracks::playlist_id, playlist_tracks::position))
-        .select((playlist_tracks::playlist_id, albums::cover.assume_not_null()))
-        .load::<(i32, String)>(conn)?,
+        .select((
+          playlist_tracks::playlist_id,
+          tracks::album_id,
+          albums::cover.nullable(),
+          tracks::cover,
+        ))
+        .load::<(i32, Option<i32>, Option<String>, Option<String>)>(conn)?
+        .into_iter()
+        .filter_map(|(playlist, album, album_cover, own)| {
+          Some((playlist, if album.is_some() { album_cover } else { own }?))
+        })
+        .collect(),
     );
     rows
       .into_iter()
@@ -534,18 +580,24 @@ enum AlbumArt {
 }
 
 /// Finds or creates the album of a scanned track and settles its year and cover by `art`.
-fn upsert_album(conn: &mut SqliteConnection, track: &ScannedTrack, artist_id: i32, art: AlbumArt) -> AppResult<i32> {
+fn upsert_album(
+  conn: &mut SqliteConnection,
+  track: &ScannedTrack,
+  title: &str,
+  artist_id: Option<i32>,
+  art: AlbumArt,
+) -> AppResult<i32> {
   let year = column_opt(track.year)?;
   let existing = albums::table
-    .filter(albums::title.eq(&track.album))
-    .filter(albums::artist_id.eq(artist_id))
+    .filter(albums::title.eq(title))
+    .filter(albums::artist_id.is(artist_id))
     .select(albums::id)
     .first::<i32>(conn)
     .optional()?;
   let Some(id) = existing else {
     let id = diesel::insert_into(albums::table)
       .values((
-        albums::title.eq(&track.album),
+        albums::title.eq(title),
         albums::artist_id.eq(artist_id),
         albums::year.eq(year),
         albums::cover.eq(&track.cover),
@@ -573,24 +625,36 @@ fn upsert_album(conn: &mut SqliteConnection, track: &ScannedTrack, artist_id: i3
   Ok(id)
 }
 
-/// Ids of the credited artists, in order, and of the album a scanned track belongs to, creating them when new.
-fn track_owners(conn: &mut SqliteConnection, track: &ScannedTrack, art: AlbumArt) -> AppResult<(Vec<i32>, i32)> {
+/// Ids of the credited artists, in order, and of the album a scanned track belongs to, if it names one, creating them
+/// when new; the album artist is kept only for an album.
+fn track_owners(
+  conn: &mut SqliteConnection,
+  track: &ScannedTrack,
+  art: AlbumArt,
+) -> AppResult<(Vec<i32>, Option<i32>)> {
   let artist_ids = track
     .artists
-    .names()
     .iter()
+    .flat_map(|artists| artists.names())
     .map(|name| upsert_artist(conn, name))
     .collect::<AppResult<Vec<_>>>()?;
-  let album_artist_id = upsert_artist(conn, &track.album_artist)?;
-  Ok((artist_ids, upsert_album(conn, track, album_artist_id, art)?))
+  let Some(title) = &track.album else {
+    return Ok((artist_ids, None));
+  };
+  let album_artist_id = track
+    .album_artist
+    .as_deref()
+    .map(|name| upsert_artist(conn, name))
+    .transpose()?;
+  Ok((
+    artist_ids,
+    Some(upsert_album(conn, track, title, album_artist_id, art)?),
+  ))
 }
 
-/// The first of the credited artists, whom the track row keeps for sorting.
-fn main_artist(artist_ids: &[i32]) -> AppResult<i32> {
-  artist_ids
-    .first()
-    .copied()
-    .ok_or_else(|| corrupt("track without artists"))
+/// The first of the credited artists, whom the track row keeps for sorting; none for a song credited to nobody.
+fn main_artist(artist_ids: &[i32]) -> Option<i32> {
+  artist_ids.first().copied()
 }
 
 /// Replaces the credited artists of a track with these, in this order.
@@ -606,7 +670,9 @@ fn set_credits(conn: &mut SqliteConnection, track_id: i32, artist_ids: &[i32]) -
       )
     })
     .collect::<Vec<_>>();
-  diesel::insert_into(track_artists::table).values(&rows).execute(conn)?;
+  if !rows.is_empty() {
+    diesel::insert_into(track_artists::table).values(&rows).execute(conn)?;
+  }
   Ok(())
 }
 
@@ -619,11 +685,20 @@ fn remove_orphans(conn: &mut SqliteConnection) -> AppResult<()> {
       .filter(tracks::id.ne_all(playlist_tracks::table.select(playlist_tracks::track_id))),
   )
   .execute(conn)?;
-  diesel::delete(albums::table.filter(albums::id.ne_all(tracks::table.select(tracks::album_id)))).execute(conn)?;
+  let held = tracks::table
+    .filter(tracks::album_id.is_not_null())
+    .select(tracks::album_id.assume_not_null());
+  diesel::delete(albums::table.filter(albums::id.ne_all(held))).execute(conn)?;
   diesel::delete(
     artists::table
       .filter(artists::id.ne_all(track_artists::table.select(track_artists::artist_id)))
-      .filter(artists::id.ne_all(albums::table.select(albums::artist_id))),
+      .filter(
+        artists::id.ne_all(
+          albums::table
+            .filter(albums::artist_id.is_not_null())
+            .select(albums::artist_id.assume_not_null()),
+        ),
+      ),
   )
   .execute(conn)?;
   Ok(())
@@ -812,12 +887,14 @@ impl TrackIndex for SqliteStore {
           folder_id: Some(folder_id),
           path: &track.path,
           title: &track.title,
-          artist_id: main_artist(&artist_ids)?,
+          artist_id: main_artist(&artist_ids),
           album_id,
           track_no: column_opt(track.track_no)?,
           disc_no: column_opt(track.disc_no)?,
           duration_ms: column(track.duration_ms)?,
           modified: track.modified,
+          genre: track.genre.as_deref(),
+          cover: track.cover.as_deref(),
         };
         let track_id: i32 = diesel::insert_into(tracks::table)
           .values(&row)
@@ -847,12 +924,14 @@ impl TrackIndex for SqliteStore {
         let track_id: i32 = diesel::update(tracks::table.filter(tracks::path.eq(&track.path)))
           .set((
             tracks::title.eq(&track.title),
-            tracks::artist_id.eq(main_artist(&artist_ids)?),
+            tracks::artist_id.eq(main_artist(&artist_ids)),
             tracks::album_id.eq(album_id),
             tracks::track_no.eq(column_opt(track.track_no)?),
             tracks::disc_no.eq(column_opt(track.disc_no)?),
             tracks::duration_ms.eq(column(track.duration_ms)?),
             tracks::modified.eq(track.modified),
+            tracks::genre.eq(&track.genre),
+            tracks::cover.eq(&track.cover),
           ))
           .returning(tracks::id)
           .get_result(conn)?;
@@ -886,7 +965,7 @@ impl LibraryQueries for SqliteStore {
     let conn = &mut *self.conn();
     let rows = track_source()
       .filter(tracks::folder_id.eq(key))
-      .order(LIBRARY_ORDER)
+      .order(library_order())
       .select(TrackRow::as_select())
       .load(conn)?;
     let tracks = tracks_from(conn, rows)?;
@@ -898,7 +977,7 @@ impl LibraryQueries for SqliteStore {
     let rows = track_source()
       .filter(present())
       .select(TrackRow::as_select())
-      .order(LIBRARY_ORDER)
+      .order(library_order())
       .load(conn)?;
     tracks_from(conn, rows)
   }
@@ -945,6 +1024,26 @@ impl LibraryQueries for SqliteStore {
     self.load_artists(None)
   }
 
+  fn genres(&self) -> AppResult<Vec<Genre>> {
+    let song_count = count(tracks::id);
+    let rows: Vec<(String, i64)> = tracks::table
+      .filter(present())
+      .filter(tracks::genre.is_not_null())
+      .group_by(tracks::genre)
+      .select((tracks::genre.assume_not_null(), song_count))
+      .order((song_count.desc(), tracks::genre))
+      .load(&mut *self.conn())?;
+    rows
+      .into_iter()
+      .map(|(name, track_count)| {
+        Ok(Genre {
+          name,
+          track_count: stored(track_count)?,
+        })
+      })
+      .collect()
+  }
+
   fn artist(&self, id: ArtistId) -> AppResult<ArtistDetail> {
     let key = column(id.0)?;
     let artist = single(self.load_artists(Some(key))?)?;
@@ -957,7 +1056,7 @@ impl LibraryQueries for SqliteStore {
     let rows = track_source()
       .filter(tracks::id.eq_any(credited))
       .filter(present())
-      .order(LIBRARY_ORDER)
+      .order(library_order())
       .select(TrackRow::as_select())
       .load(conn)?;
     let tracks = tracks_from(conn, rows)?;
@@ -1022,6 +1121,43 @@ impl SettingsStore for SqliteStore {
       .on_conflict(playback_settings::id)
       .do_update()
       .set(&row)
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+
+  fn player_session(&self) -> Option<PlayerSession> {
+    let (queue, position_ms): (String, i32) = player_session::table
+      .find(SETTINGS_ID)
+      .select((player_session::queue, player_session::position_ms))
+      .first(&mut *self.conn())
+      .ok()?;
+    // a queue saved by another version that this one cannot read is left behind like none
+    let queue: QueueSnapshot<TrackId> = serde_json::from_str(&queue).ok()?;
+    Some(PlayerSession {
+      queue,
+      position_ms: stored(position_ms).ok()?,
+    })
+  }
+
+  fn save_player_session(&self, session: &PlayerSession) -> AppResult<()> {
+    let queue = serde_json::to_string(&session.queue).map_err(|error| AppError::Storage(error.to_string()))?;
+    let row = (
+      player_session::id.eq(SETTINGS_ID),
+      player_session::queue.eq(&queue),
+      player_session::position_ms.eq(column(session.position_ms)?),
+    );
+    diesel::insert_into(player_session::table)
+      .values(row)
+      .on_conflict(player_session::id)
+      .do_update()
+      .set(row)
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+
+  fn save_player_position(&self, position_ms: u32) -> AppResult<()> {
+    diesel::update(player_session::table.find(SETTINGS_ID))
+      .set(player_session::position_ms.eq(column(position_ms)?))
       .execute(&mut *self.conn())?;
     Ok(())
   }
@@ -1183,17 +1319,19 @@ impl LyricsStore for SqliteStore {
 mod tests {
   use super::*;
   use crate::domain::artists::Artists;
+  use crate::domain::playback::PlaybackContext;
 
   fn scanned(path: &str, title: &str) -> ScannedTrack {
     ScannedTrack {
       path: path.into(),
       title: title.into(),
-      artists: Artists::new(["Artist"]).unwrap(),
-      album: "Album".into(),
-      album_artist: "Artist".into(),
+      artists: Some(Artists::new(["Artist"]).unwrap()),
+      album: Some("Album".into()),
+      album_artist: Some("Artist".into()),
       year: None,
       track_no: None,
       disc_no: None,
+      genre: None,
       duration_ms: 1000,
       modified: 1,
       cover: None,
@@ -1259,8 +1397,8 @@ mod tests {
       .unwrap();
     let path = folder.as_path().join("duet.mp3").to_string_lossy().into_owned();
     let duet = ScannedTrack {
-      artists: Artists::new(["Host", "Guest"]).unwrap(),
-      album_artist: "Host".into(),
+      artists: Some(Artists::new(["Host", "Guest"]).unwrap()),
+      album_artist: Some("Host".into()),
       ..scanned(&path, "Duet")
     };
     store.index_tracks(&folder, &[duet]).unwrap();
@@ -1275,8 +1413,8 @@ mod tests {
     assert_eq!(guest.artist.track_count, 1);
 
     let solo = ScannedTrack {
-      artists: Artists::new(["Host"]).unwrap(),
-      album_artist: "Host".into(),
+      artists: Some(Artists::new(["Host"]).unwrap()),
+      album_artist: Some("Host".into()),
       ..scanned(&path, "Duet")
     };
     store.retag_tracks(&[solo]).unwrap();
@@ -1296,6 +1434,30 @@ mod tests {
     let loaded = store.download_settings();
     assert_eq!(loaded.folder, saved.folder);
     assert_eq!(loaded.tools_checked_at, Some(42));
+  }
+
+  #[test]
+  fn player_session_round_trip() {
+    let store = SqliteStore::in_memory().unwrap();
+    assert_eq!(store.player_session(), None);
+    let session = PlayerSession {
+      queue: QueueSnapshot {
+        context: Some(PlaybackContext::Songs),
+        items: vec![TrackId(3), TrackId(1), TrackId(2)],
+        unshuffled: Some(vec![1, 2, 0]),
+        current: Some(1),
+      },
+      position_ms: 61_000,
+    };
+    store.save_player_session(&session).unwrap();
+    store.save_player_position(75_500).unwrap();
+    assert_eq!(
+      store.player_session(),
+      Some(PlayerSession {
+        position_ms: 75_500,
+        ..session
+      })
+    );
   }
 
   #[test]
@@ -1335,5 +1497,130 @@ mod tests {
     for mode in REPEAT_MODES {
       assert_eq!(parse_repeat(repeat_text(mode)), Some(mode));
     }
+  }
+
+  #[test]
+  fn genres_are_counted_the_most_common_first() {
+    let store = SqliteStore::in_memory().unwrap();
+    let folder = FolderPath::new(if cfg!(windows) { r"C:\Music" } else { "/music" }).unwrap();
+    store
+      .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
+      .unwrap();
+    let song = |file: &str, genre: Option<&str>| ScannedTrack {
+      genre: genre.map(Into::into),
+      ..scanned(&folder.as_path().join(file).to_string_lossy(), file)
+    };
+    let songs = [
+      song("a.mp3", Some("Rock")),
+      song("b.mp3", Some("Pop")),
+      song("c.mp3", Some("Rock")),
+      song("d.mp3", None),
+    ];
+    store.index_tracks(&folder, &songs).unwrap();
+
+    let genres: Vec<(String, u32)> = store
+      .genres()
+      .unwrap()
+      .into_iter()
+      .map(|genre| (genre.name, genre.track_count))
+      .collect();
+    assert_eq!(genres, [("Rock".into(), 2), ("Pop".into(), 1)]);
+  }
+
+  #[test]
+  fn songs_without_an_album_are_on_none_and_show_their_own_cover() {
+    let store = SqliteStore::in_memory().unwrap();
+    let folder = FolderPath::new(if cfg!(windows) { r"C:\Music" } else { "/music" }).unwrap();
+    store
+      .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
+      .unwrap();
+    let path = |file: &str| folder.as_path().join(file).to_string_lossy().into_owned();
+    let loose = |file: &str, cover: &str| ScannedTrack {
+      album: None,
+      cover: Some(cover.into()),
+      ..scanned(&path(file), file)
+    };
+    let songs = [
+      loose("a.mp3", "a.jpg"),
+      loose("b.mp3", "b.jpg"),
+      ScannedTrack {
+        cover: Some("album.jpg".into()),
+        ..scanned(&path("c.mp3"), "c")
+      },
+    ];
+    store.index_tracks(&folder, &songs).unwrap();
+
+    let albums = store.albums().unwrap();
+    assert_eq!(albums.len(), 1);
+    assert_eq!(albums[0].track_count, 1);
+    let covers: Vec<(Option<AlbumId>, Option<String>)> = store
+      .tracks()
+      .unwrap()
+      .into_iter()
+      .map(|track| (track.album_id, track.cover))
+      .collect();
+    assert!(covers.contains(&(None, Some("a.jpg".into()))));
+    assert!(covers.contains(&(None, Some("b.jpg".into()))));
+    assert!(covers.contains(&(Some(albums[0].id), Some("album.jpg".into()))));
+  }
+
+  #[test]
+  fn songs_without_an_artist_are_credited_to_nobody() {
+    let store = SqliteStore::in_memory().unwrap();
+    let folder = FolderPath::new(if cfg!(windows) { r"C:\Music" } else { "/music" }).unwrap();
+    store
+      .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
+      .unwrap();
+    let path = |file: &str| folder.as_path().join(file).to_string_lossy().into_owned();
+    let nameless = |file: &str| ScannedTrack {
+      artists: None,
+      album: Some("Tape".into()),
+      album_artist: None,
+      ..scanned(&path(file), file)
+    };
+    let songs = [nameless("a.mp3"), nameless("b.mp3"), scanned(&path("c.mp3"), "c")];
+    store.index_tracks(&folder, &songs).unwrap();
+    // scanning again finds the same album with no artist instead of making another
+    store.retag_tracks(&songs[..1]).unwrap();
+
+    let artists = store.artists().unwrap();
+    assert_eq!(artists.len(), 1);
+    let albums = store.albums().unwrap();
+    let tape = albums.iter().find(|album| album.title == "Tape").unwrap();
+    assert_eq!(
+      (tape.artist_id, tape.artist.as_deref(), tape.track_count),
+      (None, None, 2)
+    );
+    let tracks = store.tracks().unwrap();
+    assert_eq!(tracks.last().map(|track| track.title.as_str()), Some("b.mp3"));
+    assert!(
+      tracks
+        .iter()
+        .filter(|track| track.title != "c")
+        .all(|track| track.artists.is_empty())
+    );
+  }
+
+  /// Opens a copy of a real library named by `AIO_DB`, which migrates it, and prints what became of its songs.
+  #[test]
+  #[ignore]
+  fn migrate_library_copy() {
+    let path = std::env::var("AIO_DB").expect("AIO_DB names a copy of a library database");
+    let store = SqliteStore::open(Path::new(&path)).unwrap();
+    let tracks = store.tracks().unwrap();
+    let loose = tracks.iter().filter(|track| track.album_id.is_none()).count();
+    println!(
+      "{} songs, {loose} on no album, {} albums",
+      tracks.len(),
+      store.albums().unwrap().len()
+    );
+    assert!(
+      store
+        .albums()
+        .unwrap()
+        .iter()
+        .all(|album| album.title != "Unknown Album")
+    );
+    println!("{} playlists", store.playlists().unwrap().len());
   }
 }

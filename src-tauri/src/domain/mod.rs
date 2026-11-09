@@ -8,4 +8,5 @@ pub mod lyrics;
 pub mod pins;
 pub mod playback;
 pub mod playlist;
+pub mod tag_search;
 pub mod tags;

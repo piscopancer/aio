@@ -62,6 +62,13 @@ export const pinDropMarks = {
   grid: `${PIN_DROP_LINE} before:inset-y-3 before:w-0.5 [content-visibility:visible] data-[pin-drop=after]:before:-right-[3px] data-[pin-drop=before]:before:-left-[3px]`,
 } as const satisfies Record<PinAxis, string>
 
+/** Set on the root element while a pinned item is dragged, which the `pin-dragging` variant of the styles reads. */
+const PIN_DRAG_ATTRIBUTE = 'data-pin-dragging'
+
+/** Classes of an item that is not pinned: while a pinned one is dragged it fades and ignores the pointer, as it
+ * takes no part in the reordering. */
+export const PIN_IDLE = 'transition pin-dragging:pointer-events-none pin-dragging:opacity-40'
+
 type DropEdge = 'before' | 'after'
 
 /** Drag-and-drop ordering of the pinned items `ids` of a list; spread `dragProps(id)` on each pinned item. */
@@ -72,6 +79,7 @@ export function usePinReorder(kind: PinKind, ids: readonly number[], axis: PinAx
   const end = () => {
     setDragged(null)
     setDrop(null)
+    document.documentElement.removeAttribute(PIN_DRAG_ATTRIBUTE)
   }
 
   return (id: number) => ({
@@ -80,6 +88,7 @@ export function usePinReorder(kind: PinKind, ids: readonly number[], axis: PinAx
     onDragStart: (event: DragEvent<HTMLElement>) => {
       startPinDrag(event)
       setDragged(id)
+      document.documentElement.setAttribute(PIN_DRAG_ATTRIBUTE, '')
     },
     onDragOver: (event: DragEvent<HTMLElement>) => {
       if (dragged === null || !carriesPin(event)) return

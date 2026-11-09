@@ -12,6 +12,7 @@ use crate::application::pins::PinService;
 use crate::application::playback::{PlayerCommand, PlayerHandle};
 use crate::application::playlists::PlaylistService;
 use crate::application::ports::LibraryQueries;
+use crate::application::tag_search::{TagSearchQuery, TagSearchService};
 use crate::application::tags::{TagService, TrackEdit};
 use crate::application::views::*;
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
@@ -26,6 +27,7 @@ pub struct AppState {
   pub pins: Arc<PinService>,
   pub covers: Arc<CoverService>,
   pub tags: Arc<TagService>,
+  pub tag_search: Arc<TagSearchService>,
   pub lyrics: Arc<LyricsService>,
   pub downloads: Arc<DownloadService>,
   pub queries: Arc<dyn LibraryQueries>,
@@ -122,6 +124,13 @@ pub async fn list_artists(state: Ctx<'_>) -> AppResult<Vec<Artist>> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn list_genres(state: Ctx<'_>) -> AppResult<Vec<Genre>> {
+  let q = queries(&state);
+  blocking(move || q.genres()).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn get_artist(state: Ctx<'_>, id: ArtistId) -> AppResult<ArtistDetail> {
   let q = queries(&state);
   blocking(move || q.artist(id)).await
@@ -170,6 +179,31 @@ pub async fn import_cover(state: Ctx<'_>, file: String) -> AppResult<String> {
 pub async fn cover_color(state: Ctx<'_>, file: String) -> AppResult<String> {
   let covers = state.covers.clone();
   blocking(move || covers.color(&file)).await
+}
+
+/// A few harmonious colours of the image at `file`, as `#rrggbb`, strongest first, which the lyrics background flows
+/// with.
+#[tauri::command]
+#[specta::specta]
+pub async fn cover_palette(state: Ctx<'_>, file: String) -> AppResult<Vec<String>> {
+  let covers = state.covers.clone();
+  blocking(move || covers.palette(&file)).await
+}
+
+/// Variants of a song's tags and covers from online music databases, looked up by the tags the edit form holds now.
+#[tauri::command]
+#[specta::specta]
+pub async fn search_tags(state: Ctx<'_>, id: TrackId, query: TagSearchQuery) -> AppResult<TagSearch> {
+  let search = state.tag_search.clone();
+  blocking(move || search.search(id, &query)).await
+}
+
+/// Downloads a cover the tag search found and stores it, returning its path for the edit form to set.
+#[tauri::command]
+#[specta::specta]
+pub async fn import_found_cover(state: Ctx<'_>, url: String) -> AppResult<String> {
+  let search = state.tag_search.clone();
+  blocking(move || search.import_cover(&url)).await
 }
 
 /// Lyrics of a song, from its file or else looked up on LRCLIB.

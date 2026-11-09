@@ -154,7 +154,9 @@ export function Search() {
                   <div className="size-10 shrink-0 *:size-full">{row.cover}</div>
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate">{row.title}</span>
-                    <span className="truncate text-sm text-muted-foreground">{row.subtitle}</span>
+                    {row.subtitle !== '' && (
+                      <span className="truncate text-sm text-muted-foreground">{row.subtitle}</span>
+                    )}
                   </div>
                   {recent && (
                     <Button
@@ -305,6 +307,8 @@ function useRows(query: string, done: () => void) {
           return entry satisfies never
       }
     })()
-    return row === undefined ? [] : [{ ...row, subtitle: `${kindLabels[entry.kind]} • ${row.subtitle}` }]
+    if (row === undefined) return []
+    const subtitle = [kindLabels[entry.kind], row.subtitle].filter((part) => part !== '').join(' • ')
+    return [{ ...row, subtitle }]
   })
 }

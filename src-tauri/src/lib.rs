@@ -22,16 +22,20 @@ use crate::application::pins::PinService;
 use crate::application::playback::{PlaybackService, player_channel};
 use crate::application::playlists::PlaylistService;
 use crate::application::ports::SettingsStore;
+use crate::application::tag_search::TagSearchService;
 use crate::application::tags::TagService;
 use crate::domain::playback::Volume;
 use crate::domain::playlist::PlaylistName;
-use crate::domain::tags::{SongTags, UNKNOWN_ALBUM, UNKNOWN_ARTIST};
+use crate::domain::tags::SongTags;
 use crate::infrastructure::audio;
 use crate::infrastructure::covers::CoverStore;
 use crate::infrastructure::files::LocalAudioFiles;
 use crate::infrastructure::lrclib::Lrclib;
 use crate::infrastructure::media::YtDlpMedia;
 use crate::infrastructure::sqlite::SqliteStore;
+use crate::infrastructure::tag_sources::{
+  AcoustId, Bandcamp, CoverDownloads, Deezer, Itunes, MusicBrainz, YoutubeMusic,
+};
 use crate::infrastructure::tools::ToolKit;
 use crate::interface::cli::Cli;
 use crate::interface::commands::{self, AppState};
@@ -44,8 +48,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
     .disable_serde_phases()
     .constant("PLAYLIST_NAME_MAX_CHARS", PlaylistName::MAX_CHARS)
     .constant("VOLUME_MAX", Volume::MAX)
-    .constant("UNKNOWN_ALBUM", UNKNOWN_ALBUM)
-    .constant("UNKNOWN_ARTIST", UNKNOWN_ARTIST)
     .constant("TRACK_NUMBER_MAX", SongTags::MAX_NUMBER)
     .commands(collect_commands![
       commands::get_scenario,
@@ -58,6 +60,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::list_albums,
       commands::get_album,
       commands::list_artists,
+      commands::list_genres,
       commands::get_artist,
       commands::list_playlists,
       commands::get_playlist,
@@ -65,6 +68,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::edit_playlist,
       commands::import_cover,
       commands::cover_color,
+      commands::cover_palette,
+      commands::search_tags,
+      commands::import_found_cover,
       commands::track_tags,
       commands::edit_track,
       commands::delete_playlist,
@@ -179,7 +185,8 @@ pub fn run() {
       ));
       let playlists = Arc::new(PlaylistService::new(store.clone()));
       let pins = Arc::new(PinService::new(store.clone()));
-      let covers = Arc::new(CoverService::new(Arc::new(CoverStore::new(covers_dir))));
+      let cover_store = Arc::new(CoverStore::new(covers_dir));
+      let covers = Arc::new(CoverService::new(cover_store.clone()));
       let tools = Arc::new(ToolKit::new(data_dir.join("tools")));
       let music_dir = app.path().audio_dir().unwrap_or_else(|_| data_dir.join("downloads"));
       let downloads = Arc::new(DownloadService::new(
@@ -197,9 +204,10 @@ pub fn run() {
       #[cfg(windows)]
       if let Some(window) = app.get_webview_window("main") {
         interface::taskbar::attach(&window, player.clone());
+        interface::media_session::attach(&window, player.clone());
       }
-      let (settings, player_notifier) = (store.clone(), notifier.clone());
-      audio::spawn(move |output| PlaybackService::new(output, inbox, settings, player_notifier).run());
+      let (settings, player_queries, player_notifier) = (store.clone(), store.clone(), notifier.clone());
+      audio::spawn(move |output| PlaybackService::new(output, inbox, settings, player_queries, player_notifier).run());
       let lyrics = Arc::new(LyricsService::new(
         files.clone(),
         Arc::new(Lrclib::new()),
@@ -209,6 +217,20 @@ pub fn run() {
       ));
       // finds of the last session that could not be written while their song played
       lyrics.write_unwritten_later();
+      let tag_search = Arc::new(TagSearchService::new(
+        vec![
+          Arc::new(AcoustId::new()),
+          Arc::new(MusicBrainz::new()),
+          Arc::new(Itunes::russia()),
+          Arc::new(Itunes::united_states()),
+          Arc::new(Deezer::new()),
+          Arc::new(Bandcamp::new()),
+          Arc::new(YoutubeMusic::new()),
+        ],
+        store.clone(),
+        Arc::new(CoverDownloads::new()),
+        cover_store,
+      ));
       let tags = Arc::new(TagService::new(
         files.clone(),
         files,
@@ -237,6 +259,7 @@ pub fn run() {
         pins,
         covers,
         tags,
+        tag_search,
         lyrics,
         downloads,
         queries: store,

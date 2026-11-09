@@ -45,6 +45,64 @@ pub enum Removal {
   },
 }
 
+/// What of a queue outlasts the app: where it was started from, its items in play order, the original order of a
+/// shuffled queue as places among them, and the current place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueSnapshot<T> {
+  pub context: Option<PlaybackContext>,
+  pub items: Vec<T>,
+  /// While shuffle is on, the places in `items` in the order the queue had before it was shuffled.
+  pub unshuffled: Option<Vec<usize>>,
+  pub current: Option<usize>,
+}
+
+impl<T> QueueSnapshot<T> {
+  /// The snapshot with each item turned into what `resolve` makes of it, leaving out the items it finds no more, and
+  /// whether the current item is still there. When it is not, the item that followed it becomes current, or else the
+  /// first one, as when the current entry is removed.
+  pub fn resolve<U>(self, mut resolve: impl FnMut(T) -> Option<U>) -> (QueueSnapshot<U>, bool) {
+    let mut places = Vec::with_capacity(self.items.len());
+    let mut items = Vec::with_capacity(self.items.len());
+    for item in self.items {
+      match resolve(item) {
+        Some(item) => {
+          places.push(Some(items.len()));
+          items.push(item);
+        }
+        None => places.push(None),
+      }
+    }
+    let kept = self.current.and_then(|current| places.get(current).copied().flatten());
+    let current = kept.or_else(|| {
+      let after = self.current?;
+      let next = places.iter().skip(after).find_map(|place| *place);
+      next.or_else(|| (!items.is_empty()).then_some(0))
+    });
+    let unshuffled = self.unshuffled.map(|order| {
+      order
+        .iter()
+        .filter_map(|&place| places.get(place).copied().flatten())
+        .collect()
+    });
+    let snapshot = QueueSnapshot {
+      context: self.context,
+      items,
+      unshuffled,
+      current,
+    };
+    (snapshot, kept.is_some())
+  }
+}
+
+/// Whether `order` names every one of `len` places exactly once.
+fn whole_order(order: &[usize], len: usize) -> bool {
+  let mut seen = vec![false; len];
+  order.len() == len
+    && order
+      .iter()
+      .all(|&place| place < len && !std::mem::replace(&mut seen[place], true))
+}
+
 /// Aggregate root of the play queue: the entries, which one is current, its context, shuffle and repeat.
 ///
 /// Invariants: `current` always indexes into `entries`; `unshuffled` holds the original order exactly while
@@ -104,6 +162,42 @@ impl<T: Clone> Queue<T> {
       if let Some(item) = fresh(&entry.item) {
         entry.item = item;
       }
+    }
+  }
+
+  /// The queue as it is saved between runs, each item named by what `name` makes of it.
+  pub fn snapshot<U>(&self, name: impl Fn(&T) -> U) -> QueueSnapshot<U> {
+    QueueSnapshot {
+      context: self.context,
+      items: self.entries.iter().map(|entry| name(&entry.item)).collect(),
+      unshuffled: self.unshuffled.as_ref().map(|original| {
+        original
+          .iter()
+          .filter_map(|entry| self.position(entry.key).ok())
+          .collect()
+      }),
+      current: self.current,
+    }
+  }
+
+  /// Takes up a saved queue in place of the one it has, under the shuffle and repeat it has now: a shuffled queue is
+  /// put back in order when shuffle has since gone off, and an unshuffled one is taken as its own original order when
+  /// it has come on. An original order that does not hold every item exactly once is taken to be the play order.
+  pub fn restore(&mut self, snapshot: QueueSnapshot<T>) {
+    if snapshot.items.is_empty() {
+      return;
+    }
+    let entries: Vec<QueueEntry<T>> = snapshot.items.into_iter().map(|item| self.entry(item)).collect();
+    let original = snapshot
+      .unshuffled
+      .filter(|order| whole_order(order, entries.len()))
+      .map(|order| order.iter().map(|&place| entries[place].clone()).collect());
+    self.context = snapshot.context;
+    self.current = Some(snapshot.current.unwrap_or(0).min(entries.len() - 1));
+    self.unshuffled = Some(original.unwrap_or_else(|| entries.clone()));
+    self.entries = entries;
+    if !self.shuffle {
+      self.unshuffle();
     }
   }
 
@@ -180,7 +274,14 @@ impl<T: Clone> Queue<T> {
     self.shuffle = shuffle;
     if shuffle {
       self.shuffle_entries(rng);
-    } else if let Some(original) = self.unshuffled.take() {
+    } else {
+      self.unshuffle();
+    }
+  }
+
+  /// Puts a shuffled queue back in its original order, keeping the current entry current.
+  fn unshuffle(&mut self) {
+    if let Some(original) = self.unshuffled.take() {
       let current = self.current().map(QueueEntry::key);
       self.entries = original;
       self.current = current
@@ -346,5 +447,56 @@ mod tests {
     let key = queue.entries()[1].key();
     queue.remove(key).unwrap();
     assert_eq!(queue.jump(key).unwrap_err(), PlaybackError::EntryNotInQueue);
+  }
+
+  #[test]
+  fn a_snapshot_restores_the_order_and_the_place() {
+    let mut saved = queue(&[1, 2, 3, 4, 5], 2, true, RepeatMode::Off);
+    saved.advance(Advance::Skipped);
+    let playing = current(&saved);
+    let snapshot = saved.snapshot(|item| *item);
+
+    let mut restored = Queue::new(true, RepeatMode::Off);
+    restored.restore(snapshot.clone());
+    assert_eq!(items(&restored), items(&saved));
+    assert_eq!(current(&restored), playing);
+    restored.set_shuffle(false, &mut rng());
+    assert_eq!(items(&restored), [1, 2, 3, 4, 5]);
+
+    let mut unshuffled = Queue::new(false, RepeatMode::Off);
+    unshuffled.restore(snapshot);
+    assert_eq!(items(&unshuffled), [1, 2, 3, 4, 5]);
+    assert_eq!(current(&unshuffled), playing);
+  }
+
+  #[test]
+  fn resolving_drops_missing_items_and_moves_past_a_missing_current_one() {
+    let snapshot = QueueSnapshot {
+      context: Some(PlaybackContext::Songs),
+      items: vec![1, 2, 3, 4],
+      unshuffled: Some(vec![3, 2, 1, 0]),
+      current: Some(1),
+    };
+    let (kept, current_kept) = snapshot.clone().resolve(|item| (item != 4).then_some(item));
+    assert!(current_kept);
+    assert_eq!(
+      (kept.items, kept.current, kept.unshuffled),
+      (vec![1, 2, 3], Some(1), Some(vec![2, 1, 0]))
+    );
+
+    let (moved, current_kept) = snapshot.clone().resolve(|item| (item != 2).then_some(item));
+    assert!(!current_kept);
+    assert_eq!((moved.items, moved.current), (vec![1, 3, 4], Some(1)));
+
+    let (wrapped, _) = snapshot.resolve(|item| (item == 1).then_some(item));
+    assert_eq!((wrapped.items, wrapped.current), (vec![1], Some(0)));
+  }
+
+  #[test]
+  fn an_order_that_misses_an_item_is_not_whole() {
+    assert!(whole_order(&[2, 0, 1], 3));
+    assert!(!whole_order(&[0, 0, 1], 3));
+    assert!(!whole_order(&[0, 1], 3));
+    assert!(!whole_order(&[0, 1, 3], 3));
   }
 }

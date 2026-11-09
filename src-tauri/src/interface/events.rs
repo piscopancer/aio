@@ -55,11 +55,16 @@ impl Notifier for TauriNotifier {
   fn player_changed(&self, state: &PlayerState) {
     self.emit(PlayerStateChanged(state.clone()));
     #[cfg(windows)]
-    super::taskbar::show(&self.0, state);
+    {
+      super::taskbar::show(&self.0, state);
+      super::media_session::show(state);
+    }
   }
 
   fn playback_progress(&self, position_ms: u32) {
     self.emit(PlaybackProgress { position_ms });
+    #[cfg(windows)]
+    super::media_session::progress(position_ms);
   }
 
   fn playback_failed(&self, error: &AppError) {

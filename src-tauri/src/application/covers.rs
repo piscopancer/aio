@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::error::AppResult;
 use super::ports::CoverImages;
 
-/// The app's own artwork: images the user picks, and the colour pages tint themselves with.
+/// The app's own artwork: images the user picks, and the colours pages and lyrics tint themselves with.
 pub struct CoverService {
   covers: Arc<dyn CoverImages>,
 }
@@ -22,5 +22,10 @@ impl CoverService {
   /// The colour that covers most of the image, as `#rrggbb`.
   pub fn color(&self, file: &str) -> AppResult<String> {
     self.covers.dominant_color(Path::new(file))
+  }
+
+  /// A few harmonious dark colours of the image, as `#rrggbb`, which the lyrics background flows with.
+  pub fn palette(&self, file: &str) -> AppResult<Vec<String>> {
+    self.covers.palette(Path::new(file))
   }
 }

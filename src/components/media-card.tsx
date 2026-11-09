@@ -1,5 +1,6 @@
 import type { ComponentProps, ReactNode } from 'react'
 import type { PlaybackContext } from '@/bindings'
+import { Marquee } from '@/components/marquee'
 import { PinBadge } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { useIsPlayingFrom, usePlayer } from '@/lib/player'
@@ -45,8 +46,8 @@ export function MediaCard({
           )}
         />
       </div>
-      <span className={cn('truncate font-semibold', playingHere && 'text-primary')}>{title}</span>
-      <span className="-mt-1 truncate text-sm text-muted-foreground">{subtitle}</span>
+      <Marquee className={cn('font-semibold', playingHere && 'text-primary')}>{title}</Marquee>
+      <Marquee className="-mt-1 text-sm text-muted-foreground">{subtitle}</Marquee>
       {link}
     </div>
   )

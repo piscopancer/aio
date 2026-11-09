@@ -259,7 +259,7 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
               placeholder={preview.album ?? undefined}
               value={album}
               onValueChange={setAlbum}
-              owner={artists[0] ?? ''}
+              owner={artists[0] ?? null}
               onPick={(picked) => {
                 setArtists(leading(picked.artist, artists))
                 if (picked.year !== null) setYear(picked.year.toString())

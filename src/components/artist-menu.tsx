@@ -1,7 +1,8 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ListEndIcon, MicVocalIcon, PlayIcon } from 'lucide-react'
-import { Fragment, type ReactNode } from 'react'
+import { type ComponentProps, Fragment, type ReactNode } from 'react'
 import type { ArtistId, ArtistName } from '@/bindings'
+import { Marquee } from '@/components/marquee'
 import { PinMenuItem } from '@/components/pin-controls'
 import {
   ContextMenu,
@@ -12,7 +13,6 @@ import {
 } from '@/components/ui/context-menu'
 import { player } from '@/lib/player'
 import { queries, queryClient } from '@/lib/query'
-import { cn } from '@/lib/utils'
 
 /** Right-click menu of an artist name; it wins over the menu of the row the name sits in. */
 export function ArtistMenu({ artistId, children }: { artistId: ArtistId; children: ReactNode }) {
@@ -55,10 +55,20 @@ function ArtistMenuItems({ artistId }: { artistId: ArtistId }) {
   )
 }
 
-/** The credited artists of a song as comma-separated links to their pages, each with its own right-click menu. */
-export function ArtistLinks({ artists, className }: { artists: readonly ArtistName[]; className?: string }) {
+/** The credited artists of a song as comma-separated links to their pages, each with its own right-click menu, on one
+ * line that runs as a marquee when it does not fit, as `play` says; a song credited to nobody has no such line. */
+export function ArtistLinks({
+  artists,
+  play,
+  className,
+}: {
+  artists: readonly ArtistName[]
+  play?: ComponentProps<typeof Marquee>['play']
+  className?: string
+}) {
+  if (artists.length === 0) return null
   return (
-    <span className={cn('truncate', className)}>
+    <Marquee play={play} className={className}>
       {artists.map((artist, index) => (
         <Fragment key={artist.id}>
           {index > 0 && ', '}
@@ -73,6 +83,6 @@ export function ArtistLinks({ artists, className }: { artists: readonly ArtistNa
           </ArtistMenu>
         </Fragment>
       ))}
-    </span>
+    </Marquee>
   )
 }

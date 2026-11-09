@@ -2,6 +2,9 @@
 @import 'tw-animate-css';
 @import '@fontsource-variable/geist';
 
+/* while a pinned item is dragged to a new place; see `PIN_DRAG_ATTRIBUTE` */
+@custom-variant pin-dragging (:root[data-pin-dragging] &);
+
 /* Aio has a single dark theme; the accent is a pale apricot orange, which gives the app its name */
 :root {
   color-scheme: dark;

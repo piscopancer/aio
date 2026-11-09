@@ -31,16 +31,24 @@ function AlbumPage() {
         cover={<Cover src={album.cover} kind="album" />}
         meta={
           <>
-            <Link
-              to="/artists/$artistId"
-              params={{ artistId: album.artistId }}
-              className="font-semibold text-foreground hover:underline"
-            >
-              {album.artist}
-            </Link>
-            {album.year !== null && <MetaDot />}
-            {album.year !== null && <span>{album.year}</span>}
-            <MetaDot />
+            {album.artistId !== null && (
+              <>
+                <Link
+                  to="/artists/$artistId"
+                  params={{ artistId: album.artistId }}
+                  className="font-semibold text-foreground hover:underline"
+                >
+                  {album.artist}
+                </Link>
+                <MetaDot />
+              </>
+            )}
+            {album.year !== null && (
+              <>
+                <span>{album.year}</span>
+                <MetaDot />
+              </>
+            )}
             <span>
               {plural(album.trackCount, 'song')}, {formatLength(album.durationMs)}
             </span>

@@ -2,8 +2,21 @@ import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import type { ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
 
-function TooltipProvider({ delayDuration = 400, ...props }: ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider data-slot="tooltip-provider" delayDuration={delayDuration} {...props} />
+/** Tooltips close as soon as the pointer leaves their trigger, even when it moves onto the tooltip itself, which only
+ * ever holds a label and so has nothing to reach for. */
+function TooltipProvider({
+  delayDuration = 400,
+  disableHoverableContent = true,
+  ...props
+}: ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return (
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
+      {...props}
+    />
+  )
 }
 
 function Tooltip(props: ComponentProps<typeof TooltipPrimitive.Root>) {

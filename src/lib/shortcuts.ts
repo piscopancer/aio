@@ -2,7 +2,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { SEARCH_INPUT_ID } from '@/components/search'
-import { togglePanel, toggleSidebar } from '@/lib/layout'
+import { toggleFullscreenLyrics, togglePanel, toggleSidebar } from '@/lib/layout'
+import { useLocatePlaying } from '@/lib/locate'
 import { nextRepeat, player, usePlayer } from '@/lib/player'
 
 /** `MouseEvent.button` values of the side buttons most mice have. */
@@ -29,6 +30,7 @@ async function toggleFullscreen() {
 /** Browser-like window shortcuts and no native context menu; zoom (Ctrl + wheel, Ctrl + plus, minus, 0) is the webview's own, see `zoomHotkeysEnabled`. */
 export function useAppShortcuts() {
   const { history } = useRouter()
+  const locatePlaying = useLocatePlaying()
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -43,6 +45,12 @@ export function useAppShortcuts() {
       if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'KeyB') {
         event.preventDefault()
         toggleSidebar()
+        return
+      }
+      // what the second caption button does: fill the screen's work area, or go back to the window's own size
+      if (event.altKey && !event.ctrlKey && !event.shiftKey && event.key === 'Enter') {
+        event.preventDefault()
+        void getCurrentWindow().toggleMaximize()
         return
       }
       if (event.key === 'F11') {
@@ -63,14 +71,25 @@ export function useAppShortcuts() {
         player.setMuted(!usePlayer.getState().muted)
         return
       }
+      if (ctrlOnly && event.code === 'KeyJ') {
+        event.preventDefault()
+        locatePlaying()
+        return
+      }
+      if (ctrlOnly && event.code === 'KeyS') {
+        event.preventDefault()
+        player.setShuffle(!usePlayer.getState().shuffle)
+        return
+      }
       if (ctrlOnly && event.code === 'KeyR') {
         event.preventDefault()
         player.setRepeat(nextRepeat[usePlayer.getState().repeat])
         return
       }
-      if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'KeyL') {
+      if (event.ctrlKey && !event.altKey && event.code === 'KeyL') {
         event.preventDefault()
-        togglePanel('lyrics')
+        if (event.shiftKey) toggleFullscreenLyrics()
+        else togglePanel('lyrics')
         return
       }
       if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'KeyF') {
@@ -106,5 +125,5 @@ export function useAppShortcuts() {
       window.removeEventListener('mouseup', onMouseUp)
       window.removeEventListener('contextmenu', onContextMenu)
     }
-  }, [history])
+  }, [history, locatePlaying])
 }

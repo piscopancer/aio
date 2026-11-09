@@ -6,10 +6,12 @@ import type { PlaybackContext, Track, TrackId } from '@/bindings'
 import { ArtistLinks } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
+import { Marquee } from '@/components/marquee'
 import { Equalizer } from '@/components/equalizer'
 import { TrackMenu } from '@/components/track-menu'
 import { startTrackDrag } from '@/lib/dnd'
 import { formatClock } from '@/lib/format'
+import { useLocateRequest } from '@/lib/locate'
 import { contextKey, currentItem, player, showOrder, useIsPlayingFrom, usePlayer } from '@/lib/player'
 import { mutations } from '@/lib/query'
 import { type TrackSort, type TrackSortKey, cycleTrackSort, sortTracks, useTrackSorts } from '@/lib/track-sort'
@@ -58,11 +60,21 @@ export function TrackTable({
       tracks.map((track) => track.id),
     )
   }, [context, sort, tracks])
-  const { listRef, virtualizer } = useMainListVirtualizer(tracks.length, ROW_HEIGHT)
+  const { listRef, items, totalSize, scrollMargin, centerRow } = useMainListVirtualizer(tracks.length, ROW_HEIGHT)
   const currentId = usePlayer((state) => currentItem(state)?.track.id)
   const isPlaying = usePlayer((state) => state.isPlaying)
   const playingHere = useIsPlayingFrom(context)
   const [selected, setSelected] = useState<TrackId | null>(null)
+  const locate = useLocateRequest((state) => state.request)
+  // a passive effect, so the song is centred after the main view has put back the scroll of the page it opened
+  useEffect(() => {
+    if (locate?.key !== key) return
+    useLocateRequest.setState({ request: null })
+    const index = tracks.findIndex((track) => track.id === locate.trackId)
+    if (index < 0) return
+    setSelected(locate.trackId)
+    centerRow(index)
+  }, [locate, key, tracks, centerRow])
   const playlistReorder = usePlaylistReorder(context, tracks)
   // dragging a song to a new place only makes sense in the playlist's own order
   const reorder = sort === undefined ? playlistReorder : undefined
@@ -90,12 +102,12 @@ export function TrackTable({
             Album
           </SortHeader>
         )}
-        <SortHeader kind={context.kind} column="duration" sort={sort} label="Duration" className="justify-end pr-6">
+        <SortHeader kind={context.kind} column="duration" sort={sort} label="Duration" align="end" className="pr-6">
           <ClockIcon className="size-4" />
         </SortHeader>
       </div>
-      <div ref={listRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((item) => {
+      <div ref={listRef} className="relative" style={{ height: totalSize }}>
+        {items.map((item) => {
           const track = tracks[item.index]
           if (track === undefined) return null
           return (
@@ -105,7 +117,7 @@ export function TrackTable({
               className="absolute top-0 left-0 w-full"
               style={{
                 height: ROW_HEIGHT,
-                transform: `translateY(${item.start - virtualizer.options.scrollMargin}px)`,
+                transform: `translateY(${item.start - scrollMargin}px)`,
               }}
             >
               <TrackRow
@@ -188,22 +200,24 @@ const TrackRow = memo(function TrackRow({
         <div className="flex min-w-0 items-center gap-3">
           {layout === 'full' && <Cover src={track.cover} kind="track" className="size-10 rounded-sm" />}
           <div className="flex min-w-0 flex-col">
-            <span className={cn('truncate', titleColor[status])}>{track.title}</span>
+            <Marquee className={titleColor[status]}>{track.title}</Marquee>
             <ArtistLinks
               artists={track.artists}
               className="text-sm text-muted-foreground group-hover:text-foreground"
             />
           </div>
         </div>
-        {layout === 'full' && (
-          <Link
-            to="/albums/$albumId"
-            params={{ albumId: track.albumId }}
-            className="w-fit max-w-full truncate text-sm text-muted-foreground group-hover:text-foreground hover:underline"
-          >
-            {track.album}
-          </Link>
-        )}
+        {layout === 'full' &&
+          (track.albumId === null ? (
+            // a song on no album leaves the cell empty, keeping the grid's column
+            <span />
+          ) : (
+            <Marquee className="text-sm text-muted-foreground group-hover:text-foreground">
+              <Link to="/albums/$albumId" params={{ albumId: track.albumId }} className="hover:underline">
+                {track.album}
+              </Link>
+            </Marquee>
+          ))}
         <span className="mr-4 justify-self-end text-sm text-muted-foreground tabular-nums">
           {formatClock(track.durationMs)}
         </span>
@@ -212,12 +226,13 @@ const TrackRow = memo(function TrackRow({
   )
 })
 
-/** Column header that cycles the table through descending, ascending and the page's own order, with a chevron while it sorts. */
+/** Column header that cycles the table through descending, ascending and the page's own order, with a chevron while it sorts; a header aligned to the `end` puts the chevron before its content, so the content stays in line with the cells below. */
 function SortHeader({
   kind,
   column,
   sort,
   label,
+  align = 'start',
   className,
   children,
 }: {
@@ -225,6 +240,7 @@ function SortHeader({
   column: TrackSortKey
   sort: TrackSort | undefined
   label: string
+  align?: 'start' | 'end'
   className?: string
   children: ReactNode
 }) {
@@ -239,6 +255,8 @@ function SortHeader({
         // the whole cell and a little of the gaps beside it take the click
         '-mx-2 flex cursor-pointer items-center gap-1.5 self-stretch px-2 hover:text-foreground',
         direction !== undefined && 'text-foreground',
+        // reversed, the row starts at the right edge, so the content keeps it and the chevron goes to its left
+        align === 'end' && 'flex-row-reverse',
         className,
       )}
     >

@@ -1,18 +1,23 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::error::AppResult;
-use super::ports::{AudioOutput, LibraryQueries, Notifier, PlaybackSettings, SettingsStore};
+use super::ports::{AudioOutput, LibraryQueries, Notifier, PlaybackSettings, PlayerSession, SettingsStore};
 use super::views::{PlayerState, QueueItem, Track};
 use crate::domain::ids::TrackId;
 use crate::domain::playback::{
-  Advance, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey, Removal, RepeatMode, Volume,
+  Advance, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey, QueueSnapshot, Removal, RepeatMode,
+  Volume, resume_point,
 };
 
 /// How often the player checks for the end of a track and reports the position.
 const TICK: Duration = Duration::from_millis(250);
+
+/// How often the position of a playing song is saved, so that a crash loses no more than this of it; the queue is
+/// saved whenever it changes.
+const SAVE_POSITION_EVERY: Duration = Duration::from_secs(5);
 
 pub enum PlayerCommand {
   Start {
@@ -142,6 +147,7 @@ pub struct PlaybackService<O: AudioOutput> {
   output: O,
   inbox: PlayerInbox,
   settings: Arc<dyn SettingsStore>,
+  queries: Arc<dyn LibraryQueries>,
   notifier: Arc<dyn Notifier>,
   queue: Queue<Track>,
   volume: Volume,
@@ -150,15 +156,28 @@ pub struct PlaybackService<O: AudioOutput> {
   loaded: bool,
   playing: bool,
   suspended: Option<Suspended>,
+  /// Where the current song resumes when it is first played, after the session was restored at startup.
+  resume_at: Option<Duration>,
+  /// The queue and position saved last, so that only what changed is written again.
+  saved_queue: Option<QueueSnapshot<TrackId>>,
+  saved_position_ms: u32,
+  saved_at: Instant,
 }
 
 impl<O: AudioOutput> PlaybackService<O> {
-  pub fn new(output: O, inbox: PlayerInbox, settings: Arc<dyn SettingsStore>, notifier: Arc<dyn Notifier>) -> Self {
+  pub fn new(
+    output: O,
+    inbox: PlayerInbox,
+    settings: Arc<dyn SettingsStore>,
+    queries: Arc<dyn LibraryQueries>,
+    notifier: Arc<dyn Notifier>,
+  ) -> Self {
     let saved = settings.playback_settings();
     Self {
       output,
       inbox,
       settings,
+      queries,
       notifier,
       queue: Queue::new(saved.shuffle, saved.repeat),
       volume: saved.volume,
@@ -166,10 +185,16 @@ impl<O: AudioOutput> PlaybackService<O> {
       loaded: false,
       playing: false,
       suspended: None,
+      resume_at: None,
+      saved_queue: None,
+      saved_position_ms: 0,
+      saved_at: Instant::now(),
     }
   }
 
   pub fn run(mut self) {
+    self.restore();
+    self.publish();
     loop {
       match self.inbox.commands.recv_timeout(TICK) {
         Ok(command) => {
@@ -177,6 +202,7 @@ impl<O: AudioOutput> PlaybackService<O> {
             self.notifier.playback_failed(&error);
           }
           self.publish();
+          self.save_session();
         }
         Err(RecvTimeoutError::Timeout) => {}
         Err(RecvTimeoutError::Disconnected) => break,
@@ -189,7 +215,11 @@ impl<O: AudioOutput> PlaybackService<O> {
           self.notifier.playback_failed(&error);
         }
         self.publish();
+        self.save_session();
       } else {
+        if self.saved_at.elapsed() >= SAVE_POSITION_EVERY {
+          self.save_session();
+        }
         let position_ms = self.position_ms();
         lock(&self.inbox.state).position_ms = position_ms;
         self.notifier.playback_progress(position_ms);
@@ -209,7 +239,15 @@ impl<O: AudioOutput> PlaybackService<O> {
       }
       PlayerCommand::Toggle => {
         if !self.loaded {
-          self.load_current(true)?;
+          match self.resume_at.take() {
+            Some(position) => {
+              self.load_current(false)?;
+              self.seek(position)?;
+              self.output.play();
+              self.playing = true;
+            }
+            None => self.load_current(true)?,
+          }
         } else if self.playing {
           self.output.pause();
           self.playing = false;
@@ -306,6 +344,8 @@ impl<O: AudioOutput> PlaybackService<O> {
   }
 
   fn load_current(&mut self, play: bool) -> AppResult<()> {
+    // another song, or the same one from wherever it is asked for, so the restored place no longer applies
+    self.resume_at = None;
     self.loaded = false;
     self.playing = false;
     let Some(track) = self.queue.current().map(|entry| entry.item().clone()) else {
@@ -344,10 +384,61 @@ impl<O: AudioOutput> PlaybackService<O> {
   }
 
   fn position_ms(&self) -> u32 {
-    if self.loaded {
-      u32::try_from(self.output.position().as_millis()).unwrap_or(u32::MAX)
+    let position = if self.loaded {
+      self.output.position()
     } else {
-      0
+      self.resume_at.unwrap_or_default()
+    };
+    u32::try_from(position.as_millis()).unwrap_or(u32::MAX)
+  }
+
+  /// Takes up the session of the last run, paused, with the songs that left the library dropped from its queue; the
+  /// current song resumes a little before where it stopped, or from its start when it is a different one.
+  fn restore(&mut self) {
+    let Some(session) = self.settings.player_session() else {
+      return;
+    };
+    let mut ids = session.queue.items.clone();
+    ids.sort_unstable();
+    ids.dedup();
+    let tracks: HashMap<TrackId, Track> = match self.queries.tracks_by_ids(&ids) {
+      Ok(tracks) => tracks.into_iter().map(|track| (track.id, track)).collect(),
+      Err(error) => {
+        eprintln!("restoring the player failed: {error}");
+        return;
+      }
+    };
+    let (queue, current_kept) = session.queue.resolve(|id| tracks.get(&id).cloned());
+    self.queue.restore(queue);
+    if self.queue.current().is_some() {
+      let stopped = Duration::from_millis(session.position_ms.into());
+      self.resume_at = Some(if current_kept {
+        resume_point(stopped)
+      } else {
+        Duration::ZERO
+      });
+    }
+  }
+
+  /// Saves the queue when it changed, or else the position when it moved; a failure is only logged, since playing
+  /// goes on all the same.
+  fn save_session(&mut self) {
+    let queue = self.queue.snapshot(|track| track.id);
+    let position_ms = self.position_ms();
+    let saved = if self.saved_queue.as_ref() != Some(&queue) {
+      let session = PlayerSession { queue, position_ms };
+      let saved = self.settings.save_player_session(&session);
+      self.saved_queue = Some(session.queue);
+      saved
+    } else if position_ms != self.saved_position_ms {
+      self.settings.save_player_position(position_ms)
+    } else {
+      return;
+    };
+    self.saved_position_ms = position_ms;
+    self.saved_at = Instant::now();
+    if let Err(error) = saved {
+      eprintln!("saving the player session failed: {error}");
     }
   }
 

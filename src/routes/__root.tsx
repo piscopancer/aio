@@ -1,9 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { Link, Outlet, createRootRouteWithContext, useRouterState } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { Link, createRootRouteWithContext } from '@tanstack/react-router'
+import { useState } from 'react'
 import { LibraryTabs } from '@/components/library-tabs'
 import { PlayerBar } from '@/components/player-bar'
 import { LyricsPanel, LyricsStage } from '@/components/lyrics-panel'
+import { MainView } from '@/components/main-view'
 import { QueuePanel } from '@/components/queue-panel'
 import { Sidebar } from '@/components/sidebar'
 import { Button } from '@/components/ui/button'
@@ -25,12 +26,7 @@ function Shell() {
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null)
   const panel = useLayout((state) => state.panel)
   const lyricsView = useLayout((state) => (state.panel === 'lyrics' ? state.lyricsView : null))
-  const pathname = useRouterState({ select: (state) => state.location.pathname })
   useAppShortcuts()
-
-  useEffect(() => {
-    scrollElement?.scrollTo({ top: 0 })
-  }, [scrollElement, pathname])
 
   return (
     <TooltipProvider>
@@ -44,7 +40,7 @@ function Shell() {
                 <LibraryTabs />
                 <main ref={setScrollElement} className="min-h-0 flex-1 overflow-y-auto">
                   <ScrollContainerContext value={scrollElement}>
-                    <Outlet />
+                    <MainView />
                   </ScrollContainerContext>
                 </main>
               </div>

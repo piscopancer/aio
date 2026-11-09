@@ -10,11 +10,13 @@ import {
   Volume2Icon,
 } from 'lucide-react'
 import { useState } from 'react'
-import type { Playlist } from '@/bindings'
+import type { PlaybackContext, Playlist } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
+import { Marquee } from '@/components/marquee'
 import { CreatePlaylistDialog } from '@/components/playlist-dialogs'
 import { PinBadge } from '@/components/pin-controls'
+import { PlayButton } from '@/components/play-button'
 import { PlaylistMenu } from '@/components/playlist-menu'
 import { Button } from '@/components/ui/button'
 import { ClearButton } from '@/components/ui/clear-button'
@@ -31,7 +33,7 @@ import {
 } from '@/lib/layout'
 import { useIsPlayingFrom } from '@/lib/player'
 import { mutations, queries } from '@/lib/query'
-import { pinDropMarks, splitPinned, usePinReorder } from '@/lib/pins'
+import { PIN_IDLE, pinDropMarks, splitPinned, usePinReorder } from '@/lib/pins'
 import { matcher } from '@/lib/search'
 import { cn } from '@/lib/utils'
 
@@ -200,7 +202,7 @@ function OrderMenu({ order }: { order: PlaylistOrder }) {
   )
 }
 
-/** Sidebar entry of a playlist; dropping a dragged song on it adds the song, and a pinned one given `pinDrag` can be dragged among the pinned. */
+/** Sidebar entry of a playlist; dropping a dragged song on it adds the song, and a pinned one given `pinDrag` can be dragged among the pinned. In the full column, hovering it shows a button that plays the playlist, or pauses it while it plays. */
 function PlaylistLink({
   playlist,
   compact,
@@ -210,64 +212,77 @@ function PlaylistLink({
   compact: boolean
   pinDrag?: ReturnType<ReturnType<typeof usePinReorder>> | undefined
 }) {
-  const playingHere = useIsPlayingFrom({ kind: 'playlist', id: playlist.id })
+  const context = { kind: 'playlist', id: playlist.id } as const satisfies PlaybackContext
+  const playingHere = useIsPlayingFrom(context)
   const { mutate: add } = useMutation(mutations.addToPlaylist())
   const [dropping, setDropping] = useState(false)
   const pinned = playlist.pin !== null
 
   return (
-    <PlaylistMenu playlist={playlist}>
-      <Link
-        to="/playlists/$playlistId"
-        params={{ playlistId: playlist.id }}
-        draggable={pinDrag?.draggable}
-        data-pin-drop={pinDrag?.['data-pin-drop']}
-        onDragStart={pinDrag?.onDragStart}
-        onDragEnd={pinDrag?.onDragEnd}
-        onDragOver={(event) => {
-          if (!carriesTrack(event)) return pinDrag?.onDragOver(event)
-          event.preventDefault()
-          event.dataTransfer.dropEffect = 'copy'
-          setDropping(true)
-        }}
-        onDragLeave={() => setDropping(false)}
-        onDrop={(event) => {
-          if (!carriesTrack(event)) return pinDrag?.onDrop(event)
-          event.preventDefault()
-          setDropping(false)
-          const trackId = droppedTrack(event)
-          if (trackId !== undefined) add({ id: playlist.id, name: playlist.name, trackIds: [trackId] })
-        }}
-        className={cn(
-          'flex items-center gap-3 rounded-md p-2 transition-colors hover:bg-surface-hover data-[status=active]:bg-surface-hover',
-          pinDropMarks.list,
-          dropping && 'bg-accent ring-2 ring-primary',
-        )}
-      >
-        {compact ? (
-          <Hint label={playlist.name} side="right">
-            <span className={cn('relative block rounded-md', playingHere && 'ring-2 ring-primary')}>
-              <Cover src={playlist.cover} kind="playlist" pinned={pinned} className="size-12" />
-              {pinned && <PinBadge size="row" />}
-            </span>
-          </Hint>
-        ) : (
-          <>
-            <span className="relative shrink-0">
-              <Cover src={playlist.cover} kind="playlist" pinned={pinned} className="size-12" />
-              {pinned && <PinBadge size="row" />}
-            </span>
-            <div className="flex min-w-0 flex-col">
-              <span className={cn('truncate', playingHere && 'text-primary')}>{playlist.name}</span>
-              <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                <Music2Icon className="size-3.5 shrink-0" aria-label="Songs" />
-                {playlist.trackCount.toLocaleString()}
+    <div className={cn('group relative', !pinned && PIN_IDLE)}>
+      <PlaylistMenu playlist={playlist}>
+        <Link
+          to="/playlists/$playlistId"
+          params={{ playlistId: playlist.id }}
+          draggable={pinDrag?.draggable}
+          data-pin-drop={pinDrag?.['data-pin-drop']}
+          onDragStart={pinDrag?.onDragStart}
+          onDragEnd={pinDrag?.onDragEnd}
+          onDragOver={(event) => {
+            if (!carriesTrack(event)) return pinDrag?.onDragOver(event)
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'copy'
+            setDropping(true)
+          }}
+          onDragLeave={() => setDropping(false)}
+          onDrop={(event) => {
+            if (!carriesTrack(event)) return pinDrag?.onDrop(event)
+            event.preventDefault()
+            setDropping(false)
+            const trackId = droppedTrack(event)
+            if (trackId !== undefined) add({ id: playlist.id, name: playlist.name, trackIds: [trackId] })
+          }}
+          className={cn(
+            'flex items-center gap-3 rounded-md p-2 transition-colors group-hover:bg-surface-hover data-[status=active]:bg-surface-hover',
+            // the name stops short of the play button that hovering shows
+            !compact && 'group-hover:pr-11',
+            pinDropMarks.list,
+            dropping && 'bg-accent ring-2 ring-primary',
+          )}
+        >
+          {compact ? (
+            <Hint label={playlist.name} side="right">
+              <span className={cn('relative block rounded-md', playingHere && 'ring-2 ring-primary')}>
+                <Cover src={playlist.cover} kind="playlist" pinned={pinned} className="size-12" />
+                {pinned && <PinBadge size="row" />}
               </span>
-            </div>
-            {playingHere && <Volume2Icon className="ml-auto size-4 shrink-0 text-primary" />}
-          </>
-        )}
-      </Link>
-    </PlaylistMenu>
+            </Hint>
+          ) : (
+            <>
+              <span className="relative shrink-0">
+                <Cover src={playlist.cover} kind="playlist" pinned={pinned} className="size-12" />
+                {pinned && <PinBadge size="row" />}
+              </span>
+              <div className="flex min-w-0 flex-col">
+                <Marquee className={cn(playingHere && 'text-primary')}>{playlist.name}</Marquee>
+                <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                  <Music2Icon className="size-3.5 shrink-0" aria-label="Songs" />
+                  {playlist.trackCount.toLocaleString()}
+                </span>
+              </div>
+              {playingHere && <Volume2Icon className="mr-2 ml-auto size-4 shrink-0 text-primary group-hover:hidden" />}
+            </>
+          )}
+        </Link>
+      </PlaylistMenu>
+      {/* beside the link rather than in it, so a click plays instead of also following the link */}
+      {!compact && (
+        <PlayButton
+          context={context}
+          look="ghost"
+          className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+        />
+      )}
+    </div>
   )
 }

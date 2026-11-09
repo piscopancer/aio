@@ -12,6 +12,7 @@ import {
   type Playlist,
   type PlaylistDetail,
   type PlaylistId,
+  type TagSearchQuery,
   type TrackEdit,
   type TrackId,
   commands,
@@ -58,6 +59,7 @@ export const queries = {
     queryOptions({ queryKey: [...roots.library, 'albums', id], queryFn: () => unwrap(commands.getAlbum(id)) }),
   artists: () =>
     queryOptions({ queryKey: [...roots.library, 'artists'], queryFn: () => unwrap(commands.listArtists()) }),
+  genres: () => queryOptions({ queryKey: [...roots.library, 'genres'], queryFn: () => unwrap(commands.listGenres()) }),
   artist: (id: ArtistId) =>
     queryOptions({ queryKey: [...roots.library, 'artists', id], queryFn: () => unwrap(commands.getArtist(id)) }),
   playlists: () => queryOptions({ queryKey: [...roots.playlists], queryFn: () => unwrap(commands.listPlaylists()) }),
@@ -97,6 +99,14 @@ export const queries = {
     queryOptions({
       queryKey: ['coverColor', file],
       queryFn: () => (file === null ? null : unwrap(commands.coverColor(file))),
+      meta: { inline: true },
+    }),
+  /** A few harmonious dark colours of a cover image, strongest first, which the lyrics background flows with; a
+   * missing image gives none. */
+  coverPalette: (file: string | null) =>
+    queryOptions({
+      queryKey: ['coverPalette', file],
+      queryFn: () => (file === null ? null : unwrap(commands.coverPalette(file))),
       meta: { inline: true },
     }),
   /** Lyrics of a song; finding them once is enough, as they only ever move from LRCLIB into the file. */
@@ -168,6 +178,13 @@ export const mutations = {
     }),
   /** Stores a square copy of a picked image file and resolves to the copy's path, ready to become a cover. */
   importCover: () => mutationOptions({ mutationFn: (file: string) => unwrap(commands.importCover(file)) }),
+  /** Variants of a song's tags from online music databases, looked up by the tags its edit form holds now. */
+  searchTags: () =>
+    mutationOptions({
+      mutationFn: ({ id, query }: { id: TrackId; query: TagSearchQuery }) => unwrap(commands.searchTags(id, query)),
+    }),
+  /** Downloads a cover the tag search found and stores it, giving the path the edit form sets. */
+  importFoundCover: () => mutationOptions({ mutationFn: (url: string) => unwrap(commands.importFoundCover(url)) }),
   editTrack: () =>
     mutationOptions({
       mutationFn: ({ id, edit }: { id: TrackId; edit: TrackEdit }) => unwrap(commands.editTrack(id, edit)),

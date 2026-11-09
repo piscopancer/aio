@@ -1,7 +1,7 @@
 //! The artists credited on a song: an ordered list with the main artist first, as files and streaming sites name
 //! them, and the rule that splits one written-out credit like "A feat. B" into its names.
 
-use super::tags::{TagError, UNKNOWN_ARTIST};
+use super::tags::TagError;
 
 /// Separator of the credit Aio writes into the plain artist tag for players that read only that one.
 const CREDIT_SEPARATOR: &str = ", ";
@@ -42,11 +42,6 @@ impl Artists {
       names.extend(featured.into_iter().flat_map(split_slashes));
     }
     Self::new(names)
-  }
-
-  /// Artists for a file that names none.
-  pub fn unknown() -> Self {
-    Self(vec![UNKNOWN_ARTIST.to_owned()])
   }
 
   pub fn names(&self) -> &[String] {

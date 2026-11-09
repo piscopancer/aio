@@ -114,7 +114,7 @@ export function searchLibrary(query: string, { tracks, albums, artists, playlist
         rank(parsed, track.title, [
           ...track.artists.map((artist) => artist.name),
           track.album,
-          yearOf.get(track.albumId) ?? null,
+          track.albumId === null ? null : (yearOf.get(track.albumId) ?? null),
         ]),
       (track) => track.title,
     ),

@@ -22,10 +22,12 @@ pub struct Track {
   pub id: TrackId,
   pub path: String,
   pub title: String,
-  /// The credited artists in order, the main one first; never empty.
+  /// The credited artists in order, the main one first; empty when the file names none.
   pub artists: Vec<ArtistName>,
-  pub album_id: AlbumId,
-  pub album: String,
+  /// The album the song is on; a song whose file names none is on no album.
+  pub album_id: Option<AlbumId>,
+  pub album: Option<String>,
+  /// Its album's cover, or the cover of its own file when it is on no album.
   pub cover: Option<String>,
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
@@ -67,8 +69,9 @@ pub struct TrackTags {
 pub struct Album {
   pub id: AlbumId,
   pub title: String,
-  pub artist_id: ArtistId,
-  pub artist: String,
+  /// The artist the album is filed under; an album whose files name no artist belongs to nobody.
+  pub artist_id: Option<ArtistId>,
+  pub artist: Option<String>,
   pub year: Option<u32>,
   pub cover: Option<String>,
   pub track_count: u32,
@@ -87,6 +90,14 @@ pub struct Artist {
   pub track_count: u32,
   /// Place among the pinned of its list, the first being 0; none when it is not pinned.
   pub pin: Option<u32>,
+}
+
+/// A genre some songs of the library name, as their files spell it.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Genre {
+  pub name: String,
+  pub track_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -321,4 +332,56 @@ pub enum LyricsView {
   },
   Instrumental,
   Missing,
+}
+
+/// An online music database the tag search asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TagSource {
+  /// AcoustID, which recognises the recording by its sound and names it as MusicBrainz does.
+  AcoustId,
+  MusicBrainz,
+  /// The iTunes store of Russia, whose names keep their own script.
+  ItunesRu,
+  /// The iTunes store of the United States, whose names are mostly in Latin letters.
+  ItunesUs,
+  Deezer,
+  /// Bandcamp, where artists and small labels sell their own music.
+  Bandcamp,
+  /// YouTube Music, whose songs are releases and whose videos are uploads.
+  YoutubeMusic,
+}
+
+/// A cover a database has for a found song, as a small picture to show and a large one to keep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundCover {
+  pub thumb: String,
+  pub full: String,
+}
+
+/// The tags one database gives a song; whatever it does not know is missing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TagMatch {
+  pub source: TagSource,
+  pub title: String,
+  /// The credited artists in order, the main one first.
+  pub artists: Vec<String>,
+  pub album: Option<String>,
+  pub year: Option<u16>,
+  pub track_no: Option<u32>,
+  pub disc_no: Option<u32>,
+  pub genre: Option<String>,
+  /// The length of the found recording, when the database tells it.
+  pub duration_ms: Option<u32>,
+  pub cover: Option<FoundCover>,
+}
+
+/// What an online search for a song's tags found, best first, and the databases that could not be asked.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TagSearch {
+  pub matches: Vec<TagMatch>,
+  pub failed: Vec<TagSource>,
 }

@@ -6,10 +6,26 @@ use specta::Type;
 
 use super::artists::Artists;
 
-/// Artist a file without one is listed under.
-pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
-/// Album a file without one is listed under.
-pub const UNKNOWN_ALBUM: &str = "Unknown Album";
+/// Words that rippers and players write into a tag they know nothing about, such as `Неизв. исполнитель` in the
+/// album artist of a ripped CD, compared in lower case.
+const PLACEHOLDERS: [&str; 10] = [
+  "unknown",
+  "unknown artist",
+  "unknown album",
+  "unknown genre",
+  "неизвестно",
+  "неизв. исполнитель",
+  "неизвестный исполнитель",
+  "неизв. альбом",
+  "неизвестный альбом",
+  "неизвестный жанр",
+];
+
+/// Whether a tag holds a placeholder instead of a value; such a tag counts as empty, so that a song is not filed
+/// under an artist or album named `Unknown`.
+pub fn is_placeholder(value: &str) -> bool {
+  PLACEHOLDERS.contains(&value.trim().to_lowercase().as_str())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -25,7 +41,7 @@ pub enum TagError {
 }
 
 /// Tags written into a song file; blank text means no tag, and a song without a title or artist is listed under its
-/// file name and the unknown artist.
+/// file name and credited to nobody.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SongTags {
   title: Option<String>,
@@ -100,7 +116,7 @@ impl SongTags {
 
   /// The same tags with an album artist other than the song's main artist, as compilations and features have.
   pub fn with_album_artist(self, album_artist: Option<&str>) -> Self {
-    let album_artist = text(album_artist).filter(|name| name != self.main_artist());
+    let album_artist = text(album_artist).filter(|name| Some(name.as_str()) != self.main_artist());
     Self { album_artist, ..self }
   }
 
@@ -117,9 +133,9 @@ impl SongTags {
     self.artists.as_ref()
   }
 
-  /// The artist the library lists the song under: the first credited one, or the unknown artist.
-  pub fn main_artist(&self) -> &str {
-    self.artists.as_ref().map_or(UNKNOWN_ARTIST, Artists::main)
+  /// The artist the library lists the song under: the first credited one, if any.
+  pub fn main_artist(&self) -> Option<&str> {
+    self.artists.as_ref().map(Artists::main)
   }
 
   /// The album artist written only when it differs from the main artist.
@@ -147,22 +163,21 @@ impl SongTags {
     self.genre.as_deref()
   }
 
-  /// Title and artist of the album the library files the song under, the pair that identifies an album.
-  pub fn album_key(&self) -> (&str, &str) {
-    (
-      self.album().unwrap_or(UNKNOWN_ALBUM),
-      self.album_artist().unwrap_or(self.main_artist()),
-    )
+  /// Title and artist of the album the library files the song under, the pair that identifies an album; a song that
+  /// names no album is on none, and an album whose song names no artist belongs to nobody.
+  pub fn album_key(&self) -> Option<(&str, Option<&str>)> {
+    Some((self.album()?, self.album_artist().or(self.main_artist())))
   }
 
-  /// "Artists - Title" with the characters Windows forbids in file names replaced.
+  /// "Artists - Title", or the title alone when no artist is credited, with the characters Windows forbids in file
+  /// names replaced.
   pub fn file_stem(&self) -> String {
     const MAX_CHARS: usize = 150;
-    let credit = self
-      .artists
-      .as_ref()
-      .map_or_else(|| UNKNOWN_ARTIST.to_owned(), Artists::credit);
-    let raw = format!("{credit} - {}", self.title().unwrap_or_default());
+    let title = self.title().unwrap_or_default();
+    let raw = match &self.artists {
+      Some(artists) => format!("{} - {title}", artists.credit()),
+      None => title.to_owned(),
+    };
     let cleaned: String = raw
       .chars()
       .map(|c| {
@@ -202,6 +217,13 @@ pub fn album_move<A: PartialEq>(current: A, existing: Option<A>) -> AlbumMove<A>
 mod tests {
   use super::*;
 
+  #[test]
+  fn placeholders_count_as_empty() {
+    assert!(is_placeholder("Неизв. исполнитель"));
+    assert!(is_placeholder(" unknown album "));
+    assert!(!is_placeholder("Кино"));
+  }
+
   fn by(names: &[&str]) -> Artists {
     Artists::new(names).unwrap()
   }
@@ -234,11 +256,15 @@ mod tests {
   #[test]
   fn album_key_falls_back_like_the_library() {
     let tags = SongTags::new("x", by(&["Artist", "Guest"]), None, None).unwrap();
-    assert_eq!(tags.album_key(), (UNKNOWN_ALBUM, "Artist"));
+    assert_eq!(tags.album_key(), None);
+    let tags = SongTags::new("x", by(&["Artist", "Guest"]), Some("Hits"), None).unwrap();
+    assert_eq!(tags.album_key(), Some(("Hits", Some("Artist"))));
+    let nobody = SongTags::edited("x", None, Some("Tape"), None).unwrap();
+    assert_eq!(nobody.album_key(), Some(("Tape", None)));
     let tags = SongTags::new("x", by(&["Artist"]), Some("Hits"), None)
       .unwrap()
       .with_album_artist(Some("Various"));
-    assert_eq!(tags.album_key(), ("Hits", "Various"));
+    assert_eq!(tags.album_key(), Some(("Hits", Some("Various"))));
     let same = SongTags::new("x", by(&["Artist", "Guest"]), None, None)
       .unwrap()
       .with_album_artist(Some("Artist"));
@@ -249,6 +275,8 @@ mod tests {
   fn file_names_are_safe() {
     let tags = SongTags::new(" Thunder? ", by(&["AC/DC", "Guest"]), None, None).unwrap();
     assert_eq!(tags.file_stem(), "AC_DC, Guest - Thunder_");
+    let nobody = SongTags::edited("Intro", None, None, None).unwrap();
+    assert_eq!(nobody.file_stem(), "Intro");
   }
 
   #[test]

@@ -42,6 +42,15 @@ export function togglePanel(panel: SidePanel) {
   useLayout.setState((state) => ({ panel: state.panel === panel ? null : panel, lyricsView: 'panel' }))
 }
 
+/** Opens the lyrics over the whole screen from any view, or closes them altogether when they are there already. */
+export function toggleFullscreenLyrics() {
+  useLayout.setState((state) =>
+    state.panel === 'lyrics' && state.lyricsView === 'fullscreen'
+      ? { panel: null, lyricsView: 'panel' }
+      : { panel: 'lyrics', lyricsView: 'fullscreen' },
+  )
+}
+
 export function setLyricsView(lyricsView: LyricsView) {
   useLayout.setState({ lyricsView })
 }
@@ -61,8 +70,15 @@ export const FORWARD_KEYS = ['Alt', '→'] as const
 /** Keys that open and close the lyrics panel. */
 export const LYRICS_KEYS = ['Ctrl', 'L'] as const
 
+/** Keys that open the lyrics over the whole screen, and close them from there. */
+export const FULLSCREEN_LYRICS_KEYS = ['Ctrl', 'Shift', 'L'] as const
+
 /** Keys of the player's transport, shown in the hints of its buttons. */
 export const PREVIOUS_KEYS = ['Ctrl', '←'] as const
 export const NEXT_KEYS = ['Ctrl', '→'] as const
+export const SHUFFLE_KEYS = ['Ctrl', 'S'] as const
 export const REPEAT_KEYS = ['Ctrl', 'R'] as const
 export const MUTE_KEYS = ['Ctrl', 'M'] as const
+
+/** Keys that open the playing song's list and show the song in it. */
+export const LOCATE_KEYS = ['Ctrl', 'J'] as const

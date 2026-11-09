@@ -1,16 +1,25 @@
 import { PauseIcon, PlayIcon } from 'lucide-react'
+import type { ComponentProps } from 'react'
 import type { PlaybackContext } from '@/bindings'
 import { Button } from '@/components/ui/button'
 import { player, useIsPlayingFrom, usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
 
-/** Round accent button that starts a view or pauses it when the view is what is playing. */
+/** Looks of the button: a large raised accent circle for headers and cards, or a small bare icon for list rows. */
+const looks = {
+  accent: { variant: 'default', size: 'icon-lg', className: 'shadow-lg shadow-black/40' },
+  ghost: { variant: 'ghost', size: 'icon', className: 'hover:bg-foreground/10 [&_svg]:size-3.5' },
+} as const satisfies Record<string, Pick<ComponentProps<typeof Button>, 'variant' | 'size' | 'className'>>
+
+/** Round button that starts a view or pauses it when the view is what is playing. */
 export function PlayButton({
   context,
+  look = 'accent',
   disabled,
   className,
 }: {
   context: PlaybackContext
+  look?: keyof typeof looks
   disabled?: boolean | undefined
   className?: string | undefined
 }) {
@@ -19,10 +28,11 @@ export function PlayButton({
   const Icon = isPlaying ? PauseIcon : PlayIcon
   return (
     <Button
-      size="icon-lg"
+      variant={looks[look].variant}
+      size={looks[look].size}
       disabled={disabled}
       aria-label={isPlaying ? 'Pause' : 'Play'}
-      className={cn('shadow-lg shadow-black/40', className)}
+      className={cn(looks[look].className, className)}
       onClick={(event) => {
         event.stopPropagation()
         player.playOrToggle(context)

@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { EmptyLibrary } from '@/components/empty-state'
 import { ArtistCard } from '@/components/library-cards'
 import { MediaGrid } from '@/components/media-card'
-import { pinDropMarks, splitPinned, usePinReorder } from '@/lib/pins'
+import { PIN_IDLE, pinDropMarks, splitPinned, usePinReorder } from '@/lib/pins'
 import { queries } from '@/lib/query'
 
 export const Route = createFileRoute('/artists/')({
@@ -30,7 +30,7 @@ function Artists() {
             <ArtistCard key={artist.id} artist={artist} {...dragProps(artist.id)} className={pinDropMarks.grid} />
           ))}
           {rest.map((artist) => (
-            <ArtistCard key={artist.id} artist={artist} />
+            <ArtistCard key={artist.id} artist={artist} className={PIN_IDLE} />
           ))}
         </MediaGrid>
       )}

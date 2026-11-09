@@ -1,7 +1,7 @@
 {
   "name": "aio",
   "productName": "Aio",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local music player built on Tauri, Rust and React",
   "author": "piscopancer <piscopancer@gmail.com>",
   "license": "MIT",

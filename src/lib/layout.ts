@@ -17,11 +17,13 @@ const initialLayout: {
   lyricsView: LyricsView
   sidebarCompact: boolean
   playlistOrder: PlaylistOrder
+  creatingPlaylist: boolean
 } = {
   panel: null,
   lyricsView: 'panel',
   sidebarCompact: false,
   playlistOrder: 'played',
+  creatingPlaylist: false,
 }
 
 /** Only the sidebar mode and its playlist order are remembered across restarts; the side panels always start closed. */
@@ -31,6 +33,11 @@ export const useLayout = create<typeof initialLayout>()(
     partialize: ({ sidebarCompact, playlistOrder }) => ({ sidebarCompact, playlistOrder }),
   }),
 )
+
+/** Opens or closes the dialog that creates a playlist, which the sidebar and a shortcut both open. */
+export function setCreatingPlaylist(creatingPlaylist: boolean) {
+  useLayout.setState({ creatingPlaylist })
+}
 
 export function setPlaylistOrder(playlistOrder: PlaylistOrder) {
   useLayout.setState({ playlistOrder })
@@ -63,6 +70,9 @@ export function toggleSidebar() {
 /** Keys that shrink and widen the playlists column. */
 export const SIDEBAR_KEYS = ['Ctrl', 'B'] as const
 
+/** Keys that open the dialog creating a playlist. */
+export const CREATE_PLAYLIST_KEYS = ['Ctrl', 'N'] as const
+
 /** Keys that go back and forward through the pages, like in a browser. */
 export const BACK_KEYS = ['Alt', '←'] as const
 export const FORWARD_KEYS = ['Alt', '→'] as const
@@ -74,6 +84,7 @@ export const LYRICS_KEYS = ['Ctrl', 'L'] as const
 export const FULLSCREEN_LYRICS_KEYS = ['Ctrl', 'Shift', 'L'] as const
 
 /** Keys of the player's transport, shown in the hints of its buttons. */
+export const PLAY_KEYS = ['Ctrl', 'Space'] as const
 export const PREVIOUS_KEYS = ['Ctrl', '←'] as const
 export const NEXT_KEYS = ['Ctrl', '→'] as const
 export const SHUFFLE_KEYS = ['Ctrl', 'S'] as const

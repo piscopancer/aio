@@ -10,6 +10,7 @@ use super::library::LibraryService;
 use super::playlists::PlaylistService;
 use super::ports::{
   DownloadOutcome, DownloadStore, DownloadTools, FetchJob, FetchProgress, MediaSource, Notifier, SavedDownload,
+  SongFinder,
 };
 use super::views::*;
 use crate::domain::artists::Artists;
@@ -41,6 +42,7 @@ pub struct DownloadRequest {
 /// Fetching songs from streaming sites into the library: the tools, previews and the running downloads.
 pub struct DownloadService {
   media: Arc<dyn MediaSource>,
+  finder: Arc<dyn SongFinder>,
   tools: Arc<dyn DownloadTools>,
   /// The download settings and the kept list.
   store: Arc<dyn DownloadStore>,
@@ -60,6 +62,7 @@ pub struct DownloadService {
 impl DownloadService {
   pub fn new(
     media: Arc<dyn MediaSource>,
+    finder: Arc<dyn SongFinder>,
     tools: Arc<dyn DownloadTools>,
     store: Arc<dyn DownloadStore>,
     library: Arc<LibraryService>,
@@ -69,6 +72,7 @@ impl DownloadService {
   ) -> Self {
     Self {
       media,
+      finder,
       tools,
       store,
       library,
@@ -209,6 +213,18 @@ impl DownloadService {
       }
     };
     Ok(preview)
+  }
+
+  /// Songs and videos found by a typed name, for the user to pick the one to download.
+  pub fn search(&self, query: &str) -> AppResult<SongFinds> {
+    self.finder.find_songs(query.trim())
+  }
+
+  /// The address the dialog streams a found song from, so it can be heard before it is downloaded.
+  pub fn stream(&self, link: &str) -> AppResult<String> {
+    let song = SongLink::parse(link)?;
+    self.install_missing()?;
+    self.media.audio_stream(&song.url())
   }
 
   pub fn downloads(&self) -> Vec<DownloadView> {
@@ -470,6 +486,7 @@ fn view(
 ) -> DownloadView {
   DownloadView {
     id,
+    video_url: request.video_url.clone(),
     // a new song always has both, `SongTags::new` sees to it
     title: tags.title().unwrap_or_default().to_owned(),
     artist: tags.artists().map(Artists::credit).unwrap_or_default(),

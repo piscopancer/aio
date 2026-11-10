@@ -54,6 +54,7 @@ impl TauriNotifier {
 impl Notifier for TauriNotifier {
   fn player_changed(&self, state: &PlayerState) {
     self.emit(PlayerStateChanged(state.clone()));
+    super::discord::show(state);
     #[cfg(windows)]
     {
       super::taskbar::show(&self.0, state);
@@ -63,6 +64,7 @@ impl Notifier for TauriNotifier {
 
   fn playback_progress(&self, position_ms: u32) {
     self.emit(PlaybackProgress { position_ms });
+    super::discord::progress(position_ms);
     #[cfg(windows)]
     super::media_session::progress(position_ms);
   }

@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import { LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 import type { FoundCover, TagMatch, TagSearch, TagSource } from '@/bindings'
+import { ChipLabel } from '@/components/chip-label'
 import { Button } from '@/components/ui/button'
 import { mutations } from '@/lib/query'
 
@@ -47,9 +48,9 @@ export function Variants({ values, onPick }: { values: readonly string[]; onPick
           key={value}
           type="button"
           onClick={() => onPick(value)}
-          className="max-w-full cursor-pointer truncate rounded-full bg-foreground/8 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/15 hover:text-foreground"
+          className="max-w-full cursor-pointer rounded-full bg-foreground/8 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/15 hover:text-foreground"
         >
-          {value}
+          <ChipLabel>{value}</ChipLabel>
         </button>
       ))}
     </div>

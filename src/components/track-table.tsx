@@ -1,8 +1,17 @@
 import { useMutation } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronDownIcon, ChevronUpIcon, ClockIcon, PauseIcon, PlayIcon, TriangleAlertIcon } from 'lucide-react'
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  ClockIcon,
+  EyeOffIcon,
+  type LucideIcon,
+  PauseIcon,
+  PlayIcon,
+  TriangleAlertIcon,
+} from 'lucide-react'
 import { type DragEvent, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { PlaybackContext, Track, TrackId } from '@/bindings'
+import type { PlaybackContext, Presence, Track, TrackId } from '@/bindings'
 import { ArtistLinks } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
@@ -174,21 +183,17 @@ const TrackRow = memo(function TrackRow({
         onDragEnd={reorder?.end}
         onClick={() => onSelect(track.id)}
         onContextMenu={() => onSelect(track.id)}
-        onDoubleClick={() => !track.missing && player.play(context, track.id)}
+        onDoubleClick={() => track.presence === 'present' && player.play(context, track.id)}
         data-drop={dropEdge}
         className={cn(
           'group grid size-full items-center gap-4 rounded-md px-4 hover:bg-foreground/10',
           'data-[drop=after]:shadow-[inset_0_-2px_0_var(--primary)] data-[drop=before]:shadow-[inset_0_2px_0_var(--primary)]',
           columns[layout],
           selected && 'bg-foreground/20 hover:bg-foreground/20',
-          track.missing && 'text-muted-foreground *:not-first:opacity-50',
+          track.presence !== 'present' && 'text-muted-foreground *:not-first:opacity-50',
         )}
       >
-        {track.missing ? (
-          <Hint label="The file is no longer in your library">
-            <TriangleAlertIcon className="size-4 justify-self-center text-muted-foreground" />
-          </Hint>
-        ) : (
+        {track.presence === 'present' ? (
           <IndexCell
             status={status}
             position={position}
@@ -196,6 +201,8 @@ const TrackRow = memo(function TrackRow({
               status === 'playing' || status === 'paused' ? player.toggle() : player.play(context, track.id)
             }
           />
+        ) : (
+          <UnplayableMark presence={track.presence} />
         )}
         <div className="flex min-w-0 items-center gap-3">
           {layout === 'full' && <Cover src={track.cover} kind="track" className="size-10 rounded-sm" />}
@@ -263,6 +270,21 @@ function SortHeader({
       {children}
       {direction !== undefined && <Chevron className="size-4 text-primary" />}
     </button>
+  )
+}
+
+/** Why a song a playlist still lists cannot be played, told where its play button would be. */
+const unplayable = {
+  hidden: { icon: EyeOffIcon, hint: 'Its folder is hidden from the library' },
+  missing: { icon: TriangleAlertIcon, hint: 'The file is no longer in your library' },
+} as const satisfies Record<Exclude<Presence, 'present'>, { icon: LucideIcon; hint: string }>
+
+function UnplayableMark({ presence }: { presence: keyof typeof unplayable }) {
+  const { icon: Icon, hint } = unplayable[presence]
+  return (
+    <Hint label={hint}>
+      <Icon className="size-4 justify-self-center text-muted-foreground" />
+    </Hint>
   )
 }
 

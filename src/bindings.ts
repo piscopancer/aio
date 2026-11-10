@@ -14,6 +14,8 @@ export const commands = {
   /**  Adds a folder to the library and scans it. */
   addFolder: (path: string) => typedError<null, AppError>(__TAURI_INVOKE("add_folder", { path })),
   removeFolder: (path: string) => typedError<null, AppError>(__TAURI_INVOKE("remove_folder", { path })),
+  /**  Hides a folder's songs from the library and the queue, or shows them again. */
+  setFolderHidden: (path: string, hidden: boolean) => typedError<null, AppError>(__TAURI_INVOKE("set_folder_hidden", { path, hidden })),
   scanLibrary: () => typedError<null, AppError>(__TAURI_INVOKE("scan_library")),
   listTracks: () => typedError<Track[], AppError>(__TAURI_INVOKE("list_tracks")),
   listAlbums: () => typedError<Album[], AppError>(__TAURI_INVOKE("list_albums")),
@@ -69,6 +71,12 @@ export const commands = {
   setMuted: (muted: boolean) => __TAURI_INVOKE<void>("set_muted", { muted }),
   setShuffle: (shuffle: boolean) => __TAURI_INVOKE<void>("set_shuffle", { shuffle }),
   setRepeat: (repeat: RepeatMode) => __TAURI_INVOKE<void>("set_repeat", { repeat }),
+  /**  Turns the short fades as songs start, stop, pause and resume on or off. */
+  setFades: (fades: boolean) => __TAURI_INVOKE<void>("set_fades", { fades }),
+  /**  Lets Discord show the playing song on the user's profile, or stops it. */
+  setDiscordStatus: (shown: boolean) => __TAURI_INVOKE<void>("set_discord_status", { shown }),
+  /**  Sets how many seconds the end of a song and the start of the next play over each other; zero turns it off. */
+  setCrossfade: (seconds: number) => typedError<null, AppError>(__TAURI_INVOKE("set_crossfade", { seconds })),
   getDownloadSettings: () => __TAURI_INVOKE<DownloadSettingsView>("get_download_settings"),
   /**  Sets the folder downloads go to; null goes back to the system Music folder. */
   setDownloadFolder: (folder: string | null) => typedError<DownloadSettingsView, AppError>(__TAURI_INVOKE("set_download_folder", { folder })),
@@ -80,11 +88,19 @@ export const commands = {
   updateDownloadTools: () => typedError<ToolsView, AppError>(__TAURI_INVOKE("update_download_tools")),
   /**  Resolves a pasted song link to what would be downloaded. */
   previewDownload: (link: string) => typedError<DownloadPreview, AppError>(__TAURI_INVOKE("preview_download", { link })),
+  /**  Songs and videos on YouTube Music matching a typed name. */
+  searchDownloads: (query: string) => typedError<SongFinds, AppError>(__TAURI_INVOKE("search_downloads", { query })),
+  /**  A direct address of a found song's audio, to listen to it before downloading. */
+  streamDownload: (link: string) => typedError<string, AppError>(__TAURI_INVOKE("stream_download", { link })),
   startDownload: (request: DownloadRequest) => typedError<DownloadId, AppError>(__TAURI_INVOKE("start_download", { request })),
   listDownloads: () => __TAURI_INVOKE<DownloadView[]>("list_downloads"),
   dismissDownload: (id: DownloadId) => __TAURI_INVOKE<void>("dismiss_download", { id }),
   /**  Lyrics of a song, from its file or else looked up on LRCLIB. */
   trackLyrics: (id: TrackId) => typedError<LyricsView, AppError>(__TAURI_INVOKE("track_lyrics", { id })),
+  /**  What LRCLIB has for a song whose file holds other lyrics, if anything. */
+  lrclibLyrics: (id: TrackId) => typedError<LyricsView | null, AppError>(__TAURI_INVOKE("lrclib_lyrics", { id })),
+  /**  Writes lyrics into the song's file over those it holds. */
+  saveLyrics: (id: TrackId, text: string, origin: LyricsOrigin) => typedError<null, AppError>(__TAURI_INVOKE("save_lyrics", { id, text, origin })),
   cancelDownload: (id: DownloadId) => __TAURI_INVOKE<void>("cancel_download", { id }),
 };
 
@@ -232,6 +248,8 @@ export type DownloadStage = { kind: "queued" } |
 
 export type DownloadView = {
   id: DownloadId,
+  /**  The page the song is downloaded from, by which a search result finds its download. */
+  videoUrl: string,
   title: string,
   artist: string,
   cover: CoverSource | null,
@@ -245,7 +263,12 @@ export type DownloadsChanged = DownloadView[];
 export type Folder = {
   id: FolderId,
   path: string,
+  /**  Songs of the folder, counted even while it is hidden. */
   trackCount: number,
+  /**  The library leaves the folder's songs out, and playlists show them dimmed, until it is shown again. */
+  hidden: boolean,
+  /**  The system music folder, which the library always reads: it can be hidden but not removed. */
+  system: boolean,
 };
 
 /**  How a download folder relates to the library. */
@@ -271,6 +294,18 @@ export type FoundCover = {
   full: string,
 };
 
+/**  A song found by its name to download, either a release on YouTube Music or an uploaded video. */
+export type FoundSong = {
+  /**  The page the audio is streamed and downloaded from. */
+  videoUrl: string,
+  title: string,
+  /**  The credited artists in order, the main one first; empty for an upload that names none. */
+  artists: string[],
+  album: string | null,
+  durationMs: number | null,
+  cover: FoundCover | null,
+};
+
 /**  A genre some songs of the library name, as their files spell it. */
 export type Genre = {
   name: string,
@@ -280,7 +315,7 @@ export type Genre = {
 /**  Tracks, albums or artists changed, so every library view is stale. */
 export type LibraryChanged = null;
 
-export type LibraryError = { type: "notAbsolute" } | { type: "alreadyAdded" } | { type: "overlaps"; existing: string } | { type: "notInLibrary" };
+export type LibraryError = { type: "notAbsolute" } | { type: "alreadyAdded" } | { type: "overlaps"; existing: string } | { type: "notInLibrary" } | { type: "systemFolder" };
 
 /**  One sung line; `words` is empty unless every word is timed, and `text` is empty for an instrumental gap. */
 export type LyricLine = {
@@ -300,7 +335,9 @@ export type LyricsOrigin =
 { kind: "file" } | { kind: "lrclib"; id: number };
 
 /**  The lyrics panel's content for one song. */
-export type LyricsView = { kind: "synced"; lines: LyricLine[]; origin: LyricsOrigin } | { kind: "plain"; text: string; origin: LyricsOrigin } | { kind: "instrumental" } | { kind: "missing" };
+export type LyricsView = { kind: "synced"; lines: LyricLine[]; 
+/**  The LRC text the lines were read from, as it is copied or saved. */
+text: string; origin: LyricsOrigin } | { kind: "plain"; text: string; origin: LyricsOrigin } | { kind: "instrumental" } | { kind: "missing" };
 
 /**  The record a lookup did not find, with the id or path it was looked up by. */
 export type Missing = { kind: "track"; key: TrackId } | { kind: "trackFile"; key: string } | { kind: "album"; key: AlbumId } | { kind: "artist"; key: ArtistId } | { kind: "playlist"; key: PlaylistId } | { kind: "folder"; key: FolderId } | { kind: "folderPath"; key: string } | 
@@ -315,7 +352,7 @@ export type PinTarget = { kind: "playlist"; id: PlaylistId } | { kind: "album"; 
 /**  Where the queue was started from, so a view can tell whether the playing track belongs to it. */
 export type PlaybackContext = { kind: "songs" } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId } | { kind: "playlist"; id: PlaylistId } | { kind: "folder"; id: FolderId };
 
-export type PlaybackError = { type: "volumeOutOfRange" } | { type: "nothingToPlay" } | { type: "entryNotInQueue" };
+export type PlaybackError = { type: "volumeOutOfRange" } | { type: "nothingToPlay" } | { type: "crossfadeOutOfRange" } | { type: "entryNotInQueue" };
 
 /**  A player command was rejected or the sound device failed. */
 export type PlaybackFailed = AppError;
@@ -336,6 +373,12 @@ export type PlayerState = {
   muted: boolean,
   shuffle: boolean,
   repeat: RepeatMode,
+  /**  Whether songs fade in and out as they start, stop, pause and resume. */
+  fades: boolean,
+  /**  Seconds the end of a song and the start of the next play over each other; zero is off. */
+  crossfade: number,
+  /**  Whether Discord shows the playing song on the user's profile. */
+  discordStatus: boolean,
 };
 
 /**  Full player snapshot, emitted whenever anything except the position changes. */
@@ -367,6 +410,13 @@ export type PlaylistError = { type: "nameEmpty" } | { type: "nameTooLong"; max: 
 
 /**  A user playlist. */
 export type PlaylistId = number;
+
+/**  Whether a song can be played from the library; only playlists list the songs that cannot. */
+export type Presence = "present" | 
+/**  Its folder is hidden, until it is shown again. */
+"hidden" | 
+/**  The file left the library, until it is back. */
+"missing";
 
 /**  One quality the preview offers, with the size it would roughly take. */
 export type QualityOption = {
@@ -408,6 +458,12 @@ export type Scenario =
 
 /**  Where a song link points to. */
 export type Service = "youtube" | "youtubeMusic" | "spotify";
+
+/**  What a search by name found: released songs first, then uploaded videos, each best first. */
+export type SongFinds = {
+  songs: FoundSong[],
+  videos: FoundSong[],
+};
 
 export type TagError = { type: "titleEmpty" } | { type: "artistEmpty" } | { type: "yearInvalid" } | { type: "numberInvalid"; max: number };
 
@@ -497,8 +553,7 @@ export type Track = {
   trackNo: number | null,
   discNo: number | null,
   durationMs: number,
-  /**  The file left the library; only playlists still list the track, until the file is back. */
-  missing: boolean,
+  presence: Presence,
 };
 
 /**  The tags the edit dialog sends for one song; blank text, empty lists and missing numbers clear those tags. */
@@ -520,6 +575,8 @@ export type TrackEdit = {
   composers: string[],
   lyricists: string[],
   comment: string | null,
+  /**  Blank clears them, and the song's lyrics are then looked up online like those of any song without. */
+  lyrics: string | null,
   cover: CoverChange,
 };
 
@@ -543,6 +600,8 @@ export type TrackTags = {
   composers: string[],
   lyricists: string[],
   comment: string | null,
+  /**  The lyrics the file's own tag holds, plain or timed as LRC; lyrics kept in a separate `.lrc` file are not among them. */
+  lyrics: string | null,
   /**  The file type by its extension, such as `MP3`. */
   format: string,
   bitrateKbps: number | null,

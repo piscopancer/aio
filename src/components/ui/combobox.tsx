@@ -8,7 +8,14 @@ import { cn } from '@/lib/utils'
 /** One suggestion: what it shows, and its key among the others. */
 type Option = { key: string | number; label: string; subtitle?: string; art?: ReactNode }
 
-/** Text field with its label above it that suggests existing values as you type; picking one fills the field. */
+/** The suggestion an arrow key moves to from `index`: from none to the first or the last, and past either end back to none, where the typed text stands. */
+const stepped = (index: number | null, step: number, count: number) => {
+  if (index === null) return step > 0 ? 0 : count - 1
+  const next = index + step
+  return next < 0 || next >= count ? null : next
+}
+
+/** Text field with its label above it that suggests existing values as you type; picking one fills the field, while Enter with none highlighted keeps the typed text. */
 export function Combobox<const O extends Option>({
   label,
   icon,
@@ -38,7 +45,8 @@ export function Combobox<const O extends Option>({
   }) {
   const id = useId()
   const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(0)
+  /** The highlighted suggestion; none at first, so Enter keeps what was typed. */
+  const [active, setActive] = useState<number | null>(null)
   const anchorRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const shown = open && options.length > 0
@@ -50,23 +58,30 @@ export function Combobox<const O extends Option>({
   const pick = (option: O) => {
     onPick(option)
     setOpen(false)
+    // the next suggestions start unhighlighted, so a second Enter does not pick one of them
+    setActive(null)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // the owner's keys come first, and a handled one is not handled again here
+    const highlighted = shown && active !== null ? options[active] : undefined
+    if (event.key === 'Enter' && highlighted !== undefined) {
+      // the field picks the suggestion instead of submitting the form
+      event.preventDefault()
+      pick(highlighted)
+      return
+    }
+    // the owner's keys come next, Enter among them for the typed text, and a handled one is not handled again here
     onFieldKeyDown?.(event)
     if (event.defaultPrevented) return
     const step = { ArrowDown: 1, ArrowUp: -1 }[event.key]
     if (step !== undefined && options.length > 0) {
       event.preventDefault()
       setOpen(true)
-      setActive((index) => (index + step + options.length) % options.length)
+      setActive((index) => stepped(index, step, options.length))
     } else if (event.key === 'Enter' && shown) {
-      const option = options[active]
-      if (option === undefined) return
-      // the field picks the suggestion instead of submitting the form
+      // the typed text stands as it is, and the suggestions close instead of the form being submitted
       event.preventDefault()
-      pick(option)
+      setOpen(false)
     } else if (event.key === 'Escape' && shown) {
       // closes the suggestions without closing the dialog around the field
       event.stopPropagation()
@@ -92,10 +107,13 @@ export function Combobox<const O extends Option>({
               value={value}
               onChange={(event) => {
                 onValueChange(event.target.value)
-                setActive(0)
+                setActive(null)
                 setOpen(true)
               }}
-              onFocus={() => setOpen(true)}
+              onFocus={() => {
+                setActive(null)
+                setOpen(true)
+              }}
               onBlur={(event) => {
                 setOpen(false)
                 onFieldBlur?.(event)

@@ -11,7 +11,7 @@ function ScrollArea({
   ...props
 }: Omit<ComponentProps<typeof ScrollAreaPrimitive.Root>, 'type'> & {
   viewportRef?: Ref<HTMLDivElement> | undefined
-  /** Keeps the bar hidden even while the area scrolls, for scrolling the app does by itself. */
+  /** Leaves the bar out even while the area scrolls, for scrolling the app does by itself, which then does not render the bar on every frame. */
   hideScrollbar?: boolean | undefined
 }) {
   return (
@@ -25,18 +25,17 @@ function ScrollArea({
       <ScrollAreaPrimitive.Viewport ref={viewportRef} className="size-full rounded-[inherit] [&>div]:block!">
         {children}
       </ScrollAreaPrimitive.Viewport>
-      <ScrollAreaPrimitive.Scrollbar
-        data-slot="scroll-area-scrollbar"
-        orientation="vertical"
-        // kept mounted while hidden, so it can fade out rather than vanish
-        forceMount
-        className={cn(
-          'z-20 flex w-2 touch-none p-0.5 transition-opacity duration-300 select-none data-[state=hidden]:pointer-events-none data-[state=hidden]:opacity-0',
-          hideScrollbar && 'pointer-events-none opacity-0',
-        )}
-      >
-        <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-foreground/25 transition-colors hover:bg-foreground/40 active:bg-foreground/50" />
-      </ScrollAreaPrimitive.Scrollbar>
+      {!hideScrollbar && (
+        <ScrollAreaPrimitive.Scrollbar
+          data-slot="scroll-area-scrollbar"
+          orientation="vertical"
+          // kept mounted while hidden, so it can fade out rather than vanish
+          forceMount
+          className="z-20 flex w-2 touch-none p-0.5 transition-opacity duration-300 select-none data-[state=hidden]:pointer-events-none data-[state=hidden]:opacity-0"
+        >
+          <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-foreground/25 transition-colors hover:bg-foreground/40 active:bg-foreground/50" />
+        </ScrollAreaPrimitive.Scrollbar>
+      )}
     </ScrollAreaPrimitive.Root>
   )
 }

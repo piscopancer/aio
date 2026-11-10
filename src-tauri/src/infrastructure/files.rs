@@ -123,6 +123,7 @@ impl SongFiles for LocalAudioFiles {
       composers: text.composers,
       lyricists: text.lyricists,
       comment: text.comment,
+      lyrics: tag.and_then(embedded_lyrics).filter(|text| !text.trim().is_empty()),
       format: path
         .extension()
         .map_or_else(String::new, |ext| ext.to_string_lossy().to_uppercase()),
@@ -154,8 +155,7 @@ impl SongFiles for LocalAudioFiles {
     let embedded = tagged
       .primary_tag()
       .or_else(|| tagged.first_tag())
-      .and_then(|tag| LYRICS_KEYS.into_iter().find_map(|key| tag.get_string(key)))
-      .map(str::to_owned);
+      .and_then(embedded_lyrics);
     // players that keep lyrics out of the tags save them as "<song>.lrc" in the same folder
     let text = embedded.or_else(|| fs::read_to_string(path.with_extension("lrc")).ok());
     Ok(text.filter(|text| !text.trim().is_empty()))
@@ -297,6 +297,14 @@ fn rewrite(path: &Path, change: impl FnOnce(&mut Tag) -> AppResult<()>) -> AppRe
 /// The keys lyrics are found under: lofty files ID3's USLT frame under its own key, other formats under the general one.
 const LYRICS_KEYS: [ItemKey; 2] = [ItemKey::Lyrics, ItemKey::UnsyncLyrics];
 
+/// The lyrics a tag holds, under whichever key its format keeps them.
+fn embedded_lyrics(tag: &Tag) -> Option<String> {
+  LYRICS_KEYS
+    .into_iter()
+    .find_map(|key| tag.get_string(key))
+    .map(str::to_owned)
+}
+
 /// The key a tag of `kind` keeps lyrics under; ID3 has no frame for the general key and would drop them.
 fn lyrics_key(kind: TagType) -> ItemKey {
   match kind {
@@ -365,6 +373,16 @@ pub fn set_song_tags(tag: &mut Tag, tags: &SongTags) {
   match tags.comment() {
     Some(comment) => tag.set_comment(comment.to_owned()),
     None => tag.remove_comment(),
+  }
+  for key in LYRICS_KEYS {
+    tag.remove_key(key);
+  }
+  if let Some(lyrics) = tags.lyrics() {
+    // ID3 keeps them in a frame of their own, which the checked push turns down
+    tag.push_unchecked(TagItem::new(
+      lyrics_key(tag.tag_type()),
+      ItemValue::Text(lyrics.to_owned()),
+    ));
   }
 }
 
@@ -497,7 +515,8 @@ mod tests {
       .with_release_type(Some(ReleaseType::Ep))
       .with_genres(["Rap", "Soul"])
       .with_writers(["Jay", "Ye"], ["Frank"])
-      .with_comment(Some("first take"));
+      .with_comment(Some("first take"))
+      .with_lyrics(Some("[00:01.00]la la"));
     files.write_song(&path, &tags, &CoverChange::Keep).unwrap();
 
     let read = files.tags(&path).unwrap();
@@ -509,6 +528,11 @@ mod tests {
       (vec!["Jay".to_owned(), "Ye".to_owned()], vec!["Frank".to_owned()])
     );
     assert_eq!(read.comment.as_deref(), Some("first take"));
+    assert_eq!(read.lyrics.as_deref(), Some("[00:01.00]la la"));
+    files
+      .write_song(&path, &tags.clone().with_lyrics(Some("  ")), &CoverChange::Keep)
+      .unwrap();
+    assert_eq!(files.tags(&path).unwrap().lyrics, None);
     let tagged = lofty::read_from_path(&path).unwrap();
     let kinds: Vec<&str> = listed(tagged.primary_tag().unwrap(), ItemKey::MusicBrainzReleaseType, &['/']).collect();
     assert_eq!(kinds, ["ep", "compilation"]);

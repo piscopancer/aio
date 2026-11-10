@@ -1,24 +1,49 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import {
   ArrowLeftToLineIcon,
   ArrowRightToLineIcon,
+  CheckIcon,
   CircleAlertIcon,
+  CopyIcon,
   LoaderCircleIcon,
   Maximize2Icon,
   Minimize2Icon,
+  SaveIcon,
   XIcon,
 } from 'lucide-react'
 import { type AnimationPlaybackControls, animate, motion } from 'motion/react'
-import { type ComponentProps, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import type { LyricLine, LyricsOrigin, Track } from '@/bindings'
+import {
+  type CSSProperties,
+  type ComponentProps,
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+import type { LyricsView as FoundLyrics, LyricLine, LyricsOrigin, Track, TrackId } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { CoverGradient } from '@/components/cover-gradient'
 import { Hint } from '@/components/hint'
 import { Marquee } from '@/components/marquee'
 import { Transport } from '@/components/player-bar'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { reportError } from '@/lib/errors'
 import {
   FULLSCREEN_LYRICS_KEYS,
   LYRICS_KEYS,
@@ -28,9 +53,10 @@ import {
   useLayout,
 } from '@/lib/layout'
 import { currentItem, player, usePlayer } from '@/lib/player'
-import { queries } from '@/lib/query'
+import { mutations, queries, queryClient } from '@/lib/query'
 import { credit } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { create } from 'zustand'
 
 /** How long the panel leaves the scroll position to the user after they scroll it themselves. */
 const USER_SCROLL_HOLD_MS = 3000
@@ -47,6 +73,30 @@ const usePlayingTrack = () => usePlayer((state) => currentItem(state)?.track)
 
 /** How long the mouse rests before the full-screen lyrics hide their controls and the pointer. */
 const IDLE_MS = 3000
+
+/** How long the copy button shows that the lyrics were copied. */
+const COPIED_MS = 2000
+
+/** Lyrics that have words to copy or save, timed or not. */
+type TextLyrics = Extract<FoundLyrics, { text: string }>
+
+const hasText = (lyrics: FoundLyrics | null | undefined): lyrics is TextLyrics =>
+  lyrics !== undefined && lyrics !== null && 'text' in lyrics
+
+/** The song whose lyrics show as LRCLIB has them rather than as its file holds them, if any. */
+const useLrclibChoice = create<{ track: TrackId | null }>()(() => ({ track: null }))
+
+/** The lyrics of a song as its file or LRCLIB gives them, what LRCLIB has when it differs from the file's, and which of the two the panel shows. */
+function useShownLyrics(track: TrackId) {
+  const lyrics = useQuery(queries.lyrics(track))
+  // LRCLIB is asked again only about words the file had before Aio looked
+  const fromFile = hasText(lyrics.data) && lyrics.data.origin.kind === 'file'
+  const { data } = useQuery({ ...queries.lrclibLyrics(track), enabled: fromFile })
+  // a disabled query keeps what it had, which no longer stands once LRCLIB's words are in the file
+  const lrclib = (fromFile && data) || null
+  const showsLrclib = useLrclibChoice((state) => state.track === track) && lrclib !== null
+  return { lyrics, lrclib, shown: showsLrclib ? lrclib : lyrics.data }
+}
 
 /** A round button over the tinted lyrics, with its hint. */
 function StageButton({
@@ -106,8 +156,11 @@ export function LyricsPanel() {
   return (
     <aside className="relative isolate flex w-105 shrink-0 flex-col overflow-hidden rounded-lg">
       <CoverGradient cover={track?.cover ?? null} />
-      <header className="flex items-center justify-between px-4 py-3">
-        <h2 className="font-bold">Lyrics</h2>
+      <header className="flex items-center justify-between gap-2 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="font-bold">Lyrics</h2>
+          {track !== undefined && <LyricsActions track={track} />}
+        </div>
         <ViewButtons view="panel" />
       </header>
       {track === undefined ? (
@@ -198,7 +251,8 @@ function Stage({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setLyricsView('panel')
+      // a dialog over the stage closes on its own Escape, marking the key as taken
+      if (event.key === 'Escape' && !event.defaultPrevented) setLyricsView('panel')
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -209,10 +263,11 @@ function Stage({
       <CoverGradient cover={track?.cover ?? null} />
       <div
         className={cn(
-          'absolute top-3 right-3 z-10 transition-opacity duration-300',
+          'absolute top-3 right-3 z-10 flex items-center gap-2 transition-opacity duration-300',
           !awake && 'pointer-events-none opacity-0',
         )}
       >
+        {track !== undefined && <LyricsActions track={track} />}
         <ViewButtons view={view} />
       </div>
       {track === undefined ? (
@@ -290,14 +345,13 @@ function LyricsArea({
 }
 
 function TrackLyrics({ track, size }: { track: Track; size: Size }) {
-  const lyrics = useQuery(queries.lyrics(track.id))
+  const { lyrics, shown: data } = useShownLyrics(track.id)
   const message = (icon: ReactNode, text: string) => (
     <LyricsArea size={size}>
       <Message icon={icon}>{text}</Message>
     </LyricsArea>
   )
   if (lyrics.error !== null) return message(<CircleAlertIcon className="text-destructive" />, lyrics.error.message)
-  const { data } = lyrics
   if (data === undefined) return message(<LoaderCircleIcon className="animate-spin" />, 'Looking for lyrics…')
   switch (data.kind) {
     case 'missing':
@@ -312,7 +366,8 @@ function TrackLyrics({ track, size }: { track: Track; size: Size }) {
         </LyricsArea>
       )
     case 'synced':
-      return <SyncedLyrics lines={data.lines} origin={data.origin} size={size} />
+      // the other version starts afresh, following the song from its own lines
+      return <SyncedLyrics key={data.origin.kind} lines={data.lines} origin={data.origin} size={size} />
     default:
       return data satisfies never
   }
@@ -329,8 +384,21 @@ const LINE_STEPS = { ArrowLeft: -1, ArrowRight: 1 } as const
 
 const isStepKey = (key: string): key is keyof typeof LINE_STEPS => key in LINE_STEPS
 
+/** Lines away from the sung one at which the blur stops growing, so lines farther off look the same. */
+const LOOK_DISTANCE = 4
+
 /** Index of the line being sung at `ms`, or -1 before the first one. */
 const lineAt = (lines: readonly LyricLine[], ms: number) => lines.findLastIndex((line) => line.startMs <= ms)
+
+/** The sung line without word stamps fills white from the top down to `--fill`, from 0 to 1, over the dimmed rest as the unsung words of a stamped line are, glowing the more it fills. */
+const FILLING = {
+  backgroundImage:
+    'linear-gradient(to bottom, var(--foreground) calc(var(--fill, 0) * 100% - 0.15em), color-mix(in oklab, var(--foreground) 45%, transparent) calc(var(--fill, 0) * 100% + 0.15em))',
+  backgroundClip: 'text',
+  color: 'transparent',
+  filter:
+    'drop-shadow(0 0 calc(var(--fill, 0) * 0.3em) color-mix(in oklab, var(--foreground) calc(var(--fill, 0) * 70%), transparent))',
+} satisfies CSSProperties
 
 /** Reads the playback position in milliseconds, moved on smoothly between the player's quarter-second reports. */
 function usePlaybackClock() {
@@ -358,14 +426,23 @@ function SyncedLyrics({ lines, origin, size }: { lines: LyricLine[]; origin: Lyr
   const clock = usePlaybackClock()
   const [active, setActive] = useState(() => lineAt(lines, clock()))
 
-  // one frame loop finds the sung line and lights the sung words of it, without rendering for the words
+  // one frame loop finds the sung line and lights the sung words of it, or fills it when it has none, without rendering for either
   useEffect(() => {
     let frame = 0
     const tick = () => {
       const ms = clock()
-      setActive(lineAt(lines, ms))
+      const index = lineAt(lines, ms)
+      setActive(index)
       for (const word of scrollRef.current?.querySelectorAll<HTMLElement>('[data-current] [data-start]') ?? [])
         word.toggleAttribute('data-sung', Number(word.dataset['start']) <= ms)
+      const filling = scrollRef.current?.querySelector<HTMLElement>('[data-current] [data-fill]')
+      const line = lines[index]
+      if (filling != null && line !== undefined) {
+        // the line is sung until the next one starts, the last one until the song ends
+        const end = lines[index + 1]?.startMs ?? currentItem(usePlayer.getState())?.track.durationMs ?? line.startMs
+        const progress = Math.min(Math.max((ms - line.startMs) / Math.max(end - line.startMs, 1), 0), 1)
+        filling.style.setProperty('--fill', String(progress))
+      }
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
@@ -446,7 +523,7 @@ function SyncedLyrics({ lines, origin, size }: { lines: LyricLine[]; origin: Lyr
             key={index}
             line={line}
             index={index}
-            distance={index - active}
+            distance={Math.min(Math.max(index - active, -LOOK_DISTANCE), LOOK_DISTANCE)}
             size={size}
           />
         ))}
@@ -456,17 +533,31 @@ function SyncedLyrics({ lines, origin, size }: { lines: LyricLine[]; origin: Lyr
   )
 }
 
-function SungLine({ line, index, distance, size }: { line: LyricLine; index: number; distance: number; size: Size }) {
+/** A line of timed lyrics, dimmed and blurred by its distance from the sung one; memoized, so a new sung line renders only the lines whose look changes rather than the whole song. */
+const SungLine = memo(function SungLine({
+  line,
+  index,
+  distance,
+  size,
+}: {
+  line: LyricLine
+  index: number
+  /** Lines from the sung one, cut at `LOOK_DISTANCE` either way, beyond which every line looks the same. */
+  distance: number
+  size: Size
+}) {
   const current = distance === 0
-  const away = Math.min(Math.abs(distance), 4)
+  const away = Math.abs(distance)
   return (
     <motion.p
       data-index={index}
       data-current={current || undefined}
       initial={false}
       animate={{
-        opacity: current ? 1 : distance < 0 ? 0.35 : 0.5,
-        scale: current ? 1 : 0.96,
+        // the lines already sung stay whiter than those still to come, as if the fill had left its trace on them
+        opacity: current ? 1 : distance < 0 ? 0.65 : 0.35,
+        // the sung line stands about a fifth larger than the rest
+        scale: current ? 1 : 0.83,
         filter: `blur(${current ? 0 : away * 0.5}px)`,
       }}
       transition={{ type: 'spring', stiffness: 200, damping: 26 }}
@@ -476,7 +567,13 @@ function SungLine({ line, index, distance, size }: { line: LyricLine; index: num
       {line.text === '' ? (
         <span className="tracking-[0.4em]">♪</span>
       ) : line.words.length === 0 ? (
-        line.text
+        current ? (
+          <span data-fill className="inline-block" style={FILLING}>
+            {line.text}
+          </span>
+        ) : (
+          line.text
+        )
       ) : (
         line.words.map((word, at) => (
           <span
@@ -490,6 +587,110 @@ function SungLine({ line, index, distance, size }: { line: LyricLine; index: num
         ))
       )}
     </motion.p>
+  )
+})
+
+/** Switches between the file's lyrics and the different ones LRCLIB has, saves LRCLIB's into the file, and copies the lyrics shown. */
+function LyricsActions({ track }: { track: Track }) {
+  const { lrclib, shown } = useShownLyrics(track.id)
+  if (!hasText(shown)) return null
+  return (
+    <div className="flex items-center gap-1">
+      {lrclib !== null && (
+        <Tabs
+          value={shown === lrclib ? 'lrclib' : 'file'}
+          onValueChange={(source) => useLrclibChoice.setState({ track: source === 'lrclib' ? track.id : null })}
+        >
+          <TabsList className="gap-0.5 rounded-md bg-foreground/10 p-0.5">
+            {LYRICS_SOURCES.map(({ value, label }) => (
+              <TabsTrigger
+                key={value}
+                value={value}
+                className="rounded-sm px-2 py-0.5 text-xs text-foreground/60 data-[state=active]:bg-foreground/15"
+              >
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
+      {shown === lrclib && <SaveLyrics track={track} lyrics={lrclib} />}
+      <CopyLyrics text={shown.text} />
+    </div>
+  )
+}
+
+/** The two versions of a song's lyrics the switch moves between. */
+const LYRICS_SOURCES = [
+  { value: 'file', label: 'File' },
+  { value: 'lrclib', label: 'LRCLIB' },
+] as const
+
+/** Writes LRCLIB's lyrics into the song file over its own, once the user confirms. */
+function SaveLyrics({ track, lyrics }: { track: Track; lyrics: TextLyrics }) {
+  const [open, setOpen] = useState(false)
+  const save = useMutation({
+    ...mutations.saveLyrics(),
+    onSuccess: (_, { id }) => {
+      // the file now holds these very words, so they stay on screen while the file is read again
+      queryClient.setQueryData(queries.lyrics(id).queryKey, lyrics)
+      useLrclibChoice.setState({ track: null })
+    },
+  })
+  return (
+    <>
+      <StageButton label="Save to the song file" onClick={() => setOpen(true)}>
+        <SaveIcon />
+      </StageButton>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Overwrite lyrics?</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <DialogDescription>
+              The lyrics in the file of <span className="font-semibold text-foreground">{track.title}</span> are
+              replaced with the ones from LRCLIB.
+            </DialogDescription>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="light"
+              disabled={save.isPending}
+              onClick={() => save.mutate({ id: track.id, text: lyrics.text, origin: lyrics.origin })}
+            >
+              Overwrite
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+/** Copies the lyrics as they are kept, with their time stamps when timed, and shows a check mark for a moment after. */
+function CopyLyrics({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), COPIED_MS)
+    return () => clearTimeout(timer)
+  }, [copied])
+  return (
+    <StageButton
+      label={copied ? 'Copied' : 'Copy lyrics'}
+      onClick={() =>
+        void writeText(text).then(
+          () => setCopied(true),
+          (error: unknown) => reportError(error, 'Copying the lyrics'),
+        )
+      }
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </StageButton>
   )
 }
 

@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod covers;
+mod fader;
 pub mod files;
 pub mod lrclib;
 pub mod media;

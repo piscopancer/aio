@@ -7,6 +7,7 @@ import {
   type DownloadId,
   type DownloadRequest,
   type FolderId,
+  type LyricsOrigin,
   type PinTarget,
   type Playlist,
   type PlaylistDetail,
@@ -38,6 +39,12 @@ export const queryClient = new QueryClient({
   }),
   mutationCache: new MutationCache({ onError: (error) => reportError(error) }),
 })
+
+/** How long the results of a search by name for a download count as fresh. */
+const SEARCH_FRESH_MS = 5 * 60 * 1000
+
+/** How long a streamed audio address is reused; the site lets it play for about six hours. */
+const STREAM_FRESH_MS = 60 * 60 * 1000
 
 /** Key roots; the library root covers every view a scan can change, playlists included. */
 const roots = {
@@ -116,6 +123,16 @@ export const queries = {
       retry: false,
       meta: { inline: true },
     }),
+  /** What LRCLIB has for a song whose file holds other lyrics, null when it has nothing different. */
+  lrclibLyrics: (id: TrackId) =>
+    queryOptions({
+      // under the key of the song's lyrics, so whatever refreshes those refreshes this as well
+      queryKey: ['lyrics', id, 'lrclib'],
+      queryFn: () => unwrap(commands.lrclibLyrics(id)),
+      staleTime: Infinity,
+      retry: false,
+      meta: { inline: true },
+    }),
   /** Tags of a song file for the edit dialog, read afresh each time it opens. */
   trackTags: (id: TrackId) =>
     queryOptions({
@@ -129,6 +146,21 @@ export const queries = {
       queryKey: [...roots.downloads, 'preview', link],
       queryFn: () => unwrap(commands.previewDownload(link)),
       meta: { inline: true },
+    }),
+  /** Songs and videos on YouTube Music found by a typed name for the download dialog; kept a while, so going back to the results shows them at once. */
+  downloadSearch: (query: string) =>
+    queryOptions({
+      queryKey: [...roots.downloads, 'search', query],
+      queryFn: () => unwrap(commands.searchDownloads(query)),
+      staleTime: SEARCH_FRESH_MS,
+      meta: { inline: true },
+    }),
+  /** Direct address of a found song's audio to listen to before downloading; the address expires after a few hours, so it is kept for one. */
+  downloadStream: (link: string) =>
+    queryOptions({
+      queryKey: [...roots.downloads, 'stream', link],
+      queryFn: () => unwrap(commands.streamDownload(link)),
+      staleTime: STREAM_FRESH_MS,
     }),
 }
 
@@ -145,6 +177,11 @@ export function invalidatePlaylists() {
 export const mutations = {
   addFolder: () => mutationOptions({ mutationFn: (path: string) => unwrap(commands.addFolder(path)) }),
   removeFolder: () => mutationOptions({ mutationFn: (path: string) => unwrap(commands.removeFolder(path)) }),
+  setFolderHidden: () =>
+    mutationOptions({
+      mutationFn: ({ path, hidden }: { path: string; hidden: boolean }) =>
+        unwrap(commands.setFolderHidden(path, hidden)),
+    }),
   scan: () => mutationOptions({ mutationFn: () => unwrap(commands.scanLibrary()) }),
   setDownloadFolder: () =>
     mutationOptions({
@@ -187,7 +224,16 @@ export const mutations = {
     mutationOptions({
       mutationFn: ({ id, edit }: { id: TrackId; edit: TrackEdit }) => unwrap(commands.editTrack(id, edit)),
       onSuccess: (_, { edit }) => toast.success(`Saved ${edit.title.trim() || 'the song'}`),
-      onSettled: invalidateLibrary,
+      // the lyrics live outside the library queries, and an edit may have changed them
+      onSettled: (_, __, { id }) =>
+        Promise.all([invalidateLibrary(), queryClient.invalidateQueries({ queryKey: queries.lyrics(id).queryKey })]),
+    }),
+  /** Writes lyrics into the song's file over those it holds. */
+  saveLyrics: () =>
+    mutationOptions({
+      mutationFn: ({ id, text, origin }: { id: TrackId; text: string; origin: LyricsOrigin }) =>
+        unwrap(commands.saveLyrics(id, text, origin)),
+      onSettled: (_, __, { id }) => queryClient.invalidateQueries({ queryKey: queries.lyrics(id).queryKey }),
     }),
   deletePlaylist: () =>
     mutationOptions({

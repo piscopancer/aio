@@ -1,17 +1,16 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import {
   CalendarDaysIcon,
   CircleAlertIcon,
   Disc3Icon,
   DiscIcon,
-  FolderOpenIcon,
   GlobeIcon,
   HashIcon,
   InfoIcon,
   LoaderCircleIcon,
   LockIcon,
   MessageSquareTextIcon,
+  ScrollTextIcon,
   PenLineIcon,
   PianoIcon,
   ShapesIcon,
@@ -29,8 +28,8 @@ import {
 } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { CoverPicker } from '@/components/cover-picker'
+import { LrcField } from '@/components/lrc-field'
 import { CoverVariants, FoundPanel, Variants, variantsOf } from '@/components/found-tags'
-import { Hint } from '@/components/hint'
 import {
   AlbumField,
   ArtistsField,
@@ -113,6 +112,13 @@ function shownCover(change: CoverChange, current: string | null) {
   }
 }
 
+/** Whether `names` already holds `name`, whatever its case. */
+const holds = (names: readonly string[], name: string) =>
+  names.some((known) => known.toLowerCase() === name.toLowerCase())
+
+/** The finds before any search, one array for good, so the fields fed from them hold still while the user types. */
+const NO_MATCHES: readonly TagMatch[] = []
+
 function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
   const [title, setTitle] = useState(tags.title)
   const [artists, setArtists] = useState(tags.artists)
@@ -129,16 +135,17 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
   const [composers, setComposers] = useState(tags.composers)
   const [lyricists, setLyricists] = useState(tags.lyricists)
   const [comment, setComment] = useState(tags.comment ?? '')
+  const [lyrics, setLyrics] = useState(tags.lyrics ?? '')
   const [cover, setCover] = useState<CoverChange>({ kind: 'keep' })
-  const { data: albums = [] } = useQuery(queries.albums())
   const save = useMutation(mutations.editTrack())
   const search = useMutation(mutations.searchTags())
-  const matches = search.data?.matches ?? []
+  const matches = search.data?.matches ?? NO_MATCHES
   const searched = search.data !== undefined || search.isPending
   const setFoundCover = (path: string) => setCover({ kind: 'set', path })
-  const listed = (genre: string) => genres.some((known) => known.toLowerCase() === genre.toLowerCase())
-  /** Adds a found genre after the ones the song already names. */
-  const addGenre = (genre: string) => !listed(genre) && setGenres([...genres, genre])
+  /** Adds a found name after the ones a list field already holds. */
+  const addTo = (names: readonly string[], setNames: (names: string[]) => void) => (name: string) =>
+    !holds(names, name) && setNames([...names, name])
+  const addGenre = addTo(genres, setGenres)
   /** Takes every tag a find knows; the ones it does not know stay as they are. */
   const apply = (match: TagMatch) => {
     setTitle(match.title)
@@ -155,21 +162,14 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
       matches.map((match) => field(match)?.toString() ?? null),
       current,
     )
+  /** The names a list field could take from the finds, one by one, leaving out those it already holds. */
+  const foundNames = (field: (match: TagMatch) => readonly string[], names: readonly string[]) =>
+    variantsOf(
+      matches.flatMap(field).filter((name) => !holds(names, name)),
+      '',
+    )
 
-  const main = artists[0] ?? null
-  const ownOwners = ownAlbumArtists(albumArtists, main)
-  // the same pair the library files an album under: its title, and the album artists or else the main artist
-  const owners = ownOwners.length > 0 ? ownOwners : artists.slice(0, 1)
-  const current = albums.find((item) => item.id === track.albumId)
-  // new album artists under the same title hand the whole album over, as the backend does, instead of moving the song alone
-  const rehomed =
-    !sameNames(ownOwners, ownAlbumArtists(tags.albumArtists, tags.artists[0] ?? null)) &&
-    current !== undefined &&
-    current.title === album.trim() &&
-    !ownedBy(current, owners)
-  const target = rehomed ? current : findAlbum(albums, album, owners)
-  const joined = target !== undefined && target.id !== track.albumId ? target : null
-  const own = target?.id === track.albumId ? target : null
+  const { main, ownOwners, owners, rehomed, joined, own } = useAlbumPlacement(track, tags, album, artists, albumArtists)
   // what of the album this edit changes, which goes to its other songs as well
   const shared = [
     rehomed && 'album artists',
@@ -204,6 +204,7 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
               composers,
               lyricists,
               comment: comment.trim() === '' ? null : comment,
+              lyrics: lyrics.trim() === '' ? null : lyrics,
               cover: joined === null ? cover : { kind: 'keep' },
             },
           },
@@ -213,15 +214,6 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
     >
       <div className="flex min-h-0 flex-1">
         <DialogBody className="min-w-0 flex-1">
-          <div className="flex items-center gap-3 rounded-xl border py-1.5 pr-1.5 pl-4">
-            <Hint label={tags.path}>
-              <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground select-text">{tags.path}</span>
-            </Hint>
-            <Button type="button" variant="ghost" size="sm" onClick={() => void revealItemInDir(tags.path)}>
-              <FolderOpenIcon />
-              Show in folder
-            </Button>
-          </div>
           <SongCard
             facts={
               <>
@@ -248,10 +240,8 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
                   </Field>
                   <Field
                     className="col-span-2"
-                    variants={found((match) => match.artists.join(', ') || null, artists.join(', '))}
-                    onPick={(credit) =>
-                      setArtists(matches.find((match) => match.artists.join(', ') === credit)?.artists ?? artists)
-                    }
+                    variants={foundNames((match) => match.artists, artists)}
+                    onPick={addTo(artists, setArtists)}
                   >
                     <ArtistsField
                       hint={HINTS.artists}
@@ -262,7 +252,7 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
                   </Field>
                   <Field
                     className="col-span-2"
-                    variants={found((match) => match.genre, '').filter((genre) => !listed(genre))}
+                    variants={foundNames((match) => (match.genre === null ? [] : [match.genre]), genres)}
                     onPick={addGenre}
                   >
                     <GenresField hint={HINTS.genres} value={genres} onValueChange={setGenres} />
@@ -283,6 +273,14 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
                       onValueChange={setLyricists}
                     />
                   </div>
+                  <LrcField
+                    label="Lyrics"
+                    icon={ScrollTextIcon}
+                    hint={HINTS.lyrics}
+                    value={lyrics}
+                    onChange={setLyrics}
+                    className="col-span-2"
+                  />
                   <TextAreaField
                     label="Comment"
                     icon={MessageSquareTextIcon}
@@ -435,6 +433,32 @@ function TagsForm({ track, tags }: { track: Track; tags: TrackTags }) {
   )
 }
 
+/** Which album the edited tags file the song under: the album artists the form names besides the main artist, the owners the library matches albums by, whether new album artists take the whole album along, and the library album the song joins or keeps. Kept in a hook of its own, so the compiler sees its results as settled values and memoizes the album card on them instead of rebuilding it on every keystroke. */
+function useAlbumPlacement(
+  track: Track,
+  tags: TrackTags,
+  album: string,
+  artists: readonly string[],
+  albumArtists: readonly string[],
+) {
+  const { data: albums = [] } = useQuery(queries.albums())
+  const main = artists[0] ?? null
+  const ownOwners = ownAlbumArtists(albumArtists, main)
+  // the same pair the library files an album under: its title, and the album artists or else the main artist
+  const owners = ownOwners.length > 0 ? ownOwners : artists.slice(0, 1)
+  const current = albums.find((item) => item.id === track.albumId)
+  // new album artists under the same title hand the whole album over, as the backend does, instead of moving the song alone
+  const rehomed =
+    !sameNames(ownOwners, ownAlbumArtists(tags.albumArtists, tags.artists[0] ?? null)) &&
+    current !== undefined &&
+    current.title === album.trim() &&
+    !ownedBy(current, owners)
+  const target = rehomed ? current : findAlbum(albums, album, owners)
+  const joined = target !== undefined && target.id !== track.albumId ? target : null
+  const own = target?.id === track.albumId ? target : null
+  return { main, ownOwners, owners, rehomed, joined, own }
+}
+
 /** Joins the parts of an album an edit changes into one phrase, such as `cover and year`. */
 const CHANGES = new Intl.ListFormat('en', { type: 'conjunction' })
 
@@ -449,6 +473,8 @@ const HINTS = {
   lyricists:
     'Who wrote the words, kept in the lyricist tag (`TEXT`). Only the file names them; they do not become library artists.',
   comment: 'Free notes about the song, kept in the comment tag (`COMM`). Players show it but do nothing with it.',
+  lyrics:
+    'The words of the song, plain or timed as LRC, kept in the lyrics tag (`USLT`). Left empty, the lyrics are looked up online again.',
   disc: 'Which disc of a release with several discs the song is on, kept in the disc tag (`TPOS`).',
   track: 'The place of the song on its disc, kept in the track tag (`TRCK`). The album page orders its songs by it.',
   albumTitle:

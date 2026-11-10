@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod commands;
+pub mod discord;
 pub mod events;
 #[cfg(windows)]
 pub mod media_session;

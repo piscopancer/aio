@@ -51,6 +51,7 @@ diesel::table! {
   folders (id) {
     id -> Integer,
     path -> Text,
+    hidden -> Bool,
   }
 }
 
@@ -60,6 +61,9 @@ diesel::table! {
     volume -> Integer,
     shuffle -> Bool,
     repeat -> Text,
+    fades -> Bool,
+    crossfade_seconds -> Integer,
+    discord_status -> Bool,
   }
 }
 

@@ -101,6 +101,11 @@
   }
 }
 
+/* the positioning wrapper of a tooltip lets the pointer through like the tooltip itself, see TooltipContent */
+[data-radix-popper-content-wrapper]:has(> [data-slot='tooltip-content']) {
+  pointer-events: none;
+}
+
 /* Windows minimize, maximize and close buttons from tauri-plugin-decorum, laid over the right end of the toolbar in its height and colours */
 [data-tauri-decorum-tb] {
   position: fixed;
@@ -133,6 +138,11 @@
 @utility equalizer-bar {
   animation: equalizer 0.9s ease-in-out infinite alternate;
   transform-origin: bottom;
+}
+
+/* The bars stand still under a modal window: a running bar beneath the dimmed overlay makes the webview paint the whole window again on every keystroke in the dialog, which doubled the delay before typed text showed. */
+body[data-scroll-locked] .equalizer-bar {
+  animation-play-state: paused;
 }
 
 @keyframes equalizer {

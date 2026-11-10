@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -8,8 +8,8 @@ use super::ports::{AudioOutput, LibraryQueries, Notifier, PlaybackSettings, Play
 use super::views::{PlayerState, QueueItem, Track};
 use crate::domain::ids::TrackId;
 use crate::domain::playback::{
-  Advance, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey, QueueSnapshot, Removal, RepeatMode,
-  Volume, resume_point,
+  Advance, Crossfade, Following, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey, QueueSnapshot,
+  Removal, RepeatMode, Volume, resume_point, seamless,
 };
 
 /// How often the player checks for the end of a track and reports the position.
@@ -18,6 +18,9 @@ const TICK: Duration = Duration::from_millis(250);
 /// How often the position of a playing song is saved, so that a crash loses no more than this of it; the queue is
 /// saved whenever it changes.
 const SAVE_POSITION_EVERY: Duration = Duration::from_secs(5);
+
+/// How long a song takes to fade in or out as it starts, stops, pauses or resumes, while fades are on.
+const FADE: Duration = Duration::from_millis(500);
 
 pub enum PlayerCommand {
   Start {
@@ -36,8 +39,13 @@ pub enum PlayerCommand {
   SetMuted(bool),
   SetShuffle(bool),
   SetRepeat(RepeatMode),
+  SetFades(bool),
+  SetCrossfade(Crossfade),
+  SetDiscordStatus(bool),
   Enqueue(Vec<Track>),
   Remove(QueueKey),
+  /// Drops the queued songs the library no longer offers, such as those of a folder just hidden.
+  Prune,
   /// Lets go of the playing file when it is one of `paths`, remembering where it was, so the file can be rewritten;
   /// `done` hears back once nothing holds it.
   Release {
@@ -79,6 +87,9 @@ pub fn player_channel(settings: PlaybackSettings) -> (PlayerHandle, PlayerInbox)
     muted: false,
     shuffle: settings.shuffle,
     repeat: settings.repeat,
+    fades: settings.fades,
+    crossfade: settings.crossfade.seconds(),
+    discord_status: settings.discord_status,
   }));
   (
     PlayerHandle {
@@ -153,6 +164,9 @@ pub struct PlaybackService<O: AudioOutput> {
   volume: Volume,
   /// The sound is off while the level stays, so unmuting goes back to it; it lasts for the session only.
   muted: bool,
+  fades: bool,
+  crossfade: Crossfade,
+  discord_status: bool,
   loaded: bool,
   playing: bool,
   suspended: Option<Suspended>,
@@ -182,6 +196,9 @@ impl<O: AudioOutput> PlaybackService<O> {
       queue: Queue::new(saved.shuffle, saved.repeat),
       volume: saved.volume,
       muted: false,
+      fades: saved.fades,
+      crossfade: saved.crossfade,
+      discord_status: saved.discord_status,
       loaded: false,
       playing: false,
       suspended: None,
@@ -216,6 +233,12 @@ impl<O: AudioOutput> PlaybackService<O> {
         }
         self.publish();
         self.save_session();
+      } else if self.approach_end().unwrap_or_else(|error| {
+        self.notifier.playback_failed(&error);
+        true
+      }) {
+        self.publish();
+        self.save_session();
       } else {
         if self.saved_at.elapsed() >= SAVE_POSITION_EVERY {
           self.save_session();
@@ -231,28 +254,28 @@ impl<O: AudioOutput> PlaybackService<O> {
     match command {
       PlayerCommand::Start { context, tracks, start } => {
         self.queue.start(context, tracks, start, &mut rand::rng())?;
-        self.load_current(true)
+        self.load_current(true, self.fade())
       }
       PlayerCommand::Jump(key) => {
         self.queue.jump(key)?;
-        self.load_current(true)
+        self.load_current(true, self.fade())
       }
       PlayerCommand::Toggle => {
         if !self.loaded {
           match self.resume_at.take() {
             Some(position) => {
-              self.load_current(false)?;
+              self.load_current(false, Duration::ZERO)?;
               self.seek(position)?;
-              self.output.play();
+              self.output.play(self.fade());
               self.playing = true;
             }
-            None => self.load_current(true)?,
+            None => self.load_current(true, self.fade())?,
           }
         } else if self.playing {
-          self.output.pause();
+          self.output.pause(self.fade());
           self.playing = false;
         } else {
-          self.output.play();
+          self.output.play(self.fade());
           self.playing = true;
         }
         Ok(())
@@ -261,11 +284,11 @@ impl<O: AudioOutput> PlaybackService<O> {
       PlayerCommand::Previous => match self.queue.go_back(self.output.position()) {
         Previous::Restart if self.loaded => self.seek(Duration::ZERO),
         Previous::Restart => Ok(()),
-        Previous::Go(_) => self.load_current(true),
+        Previous::Go(_) => self.load_current(true, self.fade()),
       },
       PlayerCommand::Seek(position_ms) => {
         if !self.loaded {
-          self.load_current(false)?;
+          self.load_current(false, Duration::ZERO)?;
         }
         self.seek(Duration::from_millis(position_ms.into()))
       }
@@ -288,18 +311,53 @@ impl<O: AudioOutput> PlaybackService<O> {
         self.queue.set_repeat(repeat);
         self.save_settings()
       }
+      PlayerCommand::SetFades(fades) => {
+        self.fades = fades;
+        self.save_settings()
+      }
+      PlayerCommand::SetCrossfade(crossfade) => {
+        self.crossfade = crossfade;
+        self.save_settings()
+      }
+      PlayerCommand::SetDiscordStatus(shown) => {
+        self.discord_status = shown;
+        self.save_settings()
+      }
       PlayerCommand::Enqueue(tracks) => {
         self.queue.enqueue(tracks);
         Ok(())
       }
       PlayerCommand::Remove(key) => match self.queue.remove(key)? {
         Removal::Other => Ok(()),
-        Removal::Current { has_next: true } => self.load_current(self.playing),
+        Removal::Current { has_next: true } => self.load_current(self.playing, self.fade()),
         Removal::Current { has_next: false } => {
-          self.stop();
+          self.stop(self.fade());
           Ok(())
         }
       },
+      PlayerCommand::Prune => {
+        let ids: Vec<TrackId> = self.queue.entries().iter().map(|entry| entry.item().id).collect();
+        let kept: HashSet<TrackId> = self
+          .queries
+          .tracks_by_ids(&ids)?
+          .into_iter()
+          .map(|track| track.id)
+          .collect();
+        let current = self.queue.current().map(QueueEntry::key);
+        let mut gone: Vec<QueueKey> = self
+          .queue
+          .entries()
+          .iter()
+          .filter(|entry| !kept.contains(&entry.item().id))
+          .map(QueueEntry::key)
+          .collect();
+        // the playing song goes last, so the player moves on once, to a song that stays
+        gone.sort_by_key(|key| Some(*key) == current);
+        for key in gone {
+          self.handle(PlayerCommand::Remove(key))?;
+        }
+        Ok(())
+      }
       PlayerCommand::Release { paths, done } => {
         let held = self.loaded
           && self
@@ -311,8 +369,10 @@ impl<O: AudioOutput> PlaybackService<O> {
             position: self.output.position(),
             playing: self.playing,
           });
-          self.stop();
+          self.stop(Duration::ZERO);
         }
+        // a song still fading out may be one of those files as well
+        self.output.cut_leaving();
         let _ = done.send(());
         Ok(())
       }
@@ -323,10 +383,10 @@ impl<O: AudioOutput> PlaybackService<O> {
         let Some(suspended) = self.suspended.take() else {
           return Ok(());
         };
-        self.load_current(false)?;
+        self.load_current(false, Duration::ZERO)?;
         self.seek(suspended.position)?;
         if suspended.playing {
-          self.output.play();
+          self.output.play(Duration::ZERO);
           self.playing = true;
         }
         Ok(())
@@ -335,24 +395,62 @@ impl<O: AudioOutput> PlaybackService<O> {
   }
 
   fn next(&mut self, reason: Advance) -> AppResult<()> {
-    if self.queue.advance(reason) {
-      self.load_current(true)
-    } else {
-      self.stop();
-      Ok(())
+    let ended = self.queue.current().and_then(|entry| entry.item().album_id);
+    if !self.queue.advance(reason, &mut rand::rng()) {
+      self.stop(self.fade());
+      return Ok(());
     }
+    let next = self.queue.current().and_then(|entry| entry.item().album_id);
+    let fade = match reason {
+      Advance::TrackEnded if seamless(ended, next) => Duration::ZERO,
+      Advance::TrackEnded | Advance::Skipped => self.fade(),
+    };
+    self.load_current(true, fade)
   }
 
-  fn load_current(&mut self, play: bool) -> AppResult<()> {
+  /// Gets the playing song ready for its end: its last moment fades out unless the next one goes on from it without a seam, and once it is within the crossfade the next one starts over it. True when it did, so the queue moved on.
+  fn approach_end(&mut self) -> AppResult<bool> {
+    let Some(ending) = self.queue.current().map(|entry| entry.item()) else {
+      return Ok(false);
+    };
+    let next = match self.queue.following() {
+      Following::End => None,
+      Following::Unknown => Some(None),
+      Following::Entry(entry) if seamless(ending.album_id, entry.item().album_id) => {
+        self.output.fade_tail(Duration::ZERO);
+        return Ok(false);
+      }
+      Following::Entry(entry) => Some(Some(Duration::from_millis(entry.item().duration_ms.into()))),
+    };
+    let length = Duration::from_millis(ending.duration_ms.into());
+    self.output.fade_tail(self.fade());
+    let Some(next) = next else { return Ok(false) };
+    let overlap = self.crossfade.overlap(length, next);
+    let left = length.saturating_sub(self.output.position());
+    if overlap.is_zero() || left > overlap {
+      return Ok(false);
+    }
+    self.queue.advance(Advance::TrackEnded, &mut rand::rng());
+    // the two cross over what is left of the ending song, so it falls silent just as it ends
+    self.load_current(true, left)?;
+    Ok(true)
+  }
+
+  /// How long a song fades as it starts, stops, pauses or resumes; zero while fades are off.
+  fn fade(&self) -> Duration {
+    if self.fades { FADE } else { Duration::ZERO }
+  }
+
+  fn load_current(&mut self, play: bool, fade: Duration) -> AppResult<()> {
     // another song, or the same one from wherever it is asked for, so the restored place no longer applies
     self.resume_at = None;
     self.loaded = false;
     self.playing = false;
     let Some(track) = self.queue.current().map(|entry| entry.item().clone()) else {
-      self.output.unload();
+      self.output.unload(fade);
       return Err(PlaybackError::NothingToPlay.into());
     };
-    self.output.load(&track, self.audible(), play)?;
+    self.output.load(&track, self.audible(), play, fade)?;
     self.loaded = true;
     self.playing = play;
     Ok(())
@@ -364,8 +462,8 @@ impl<O: AudioOutput> PlaybackService<O> {
     Ok(())
   }
 
-  fn stop(&mut self) {
-    self.output.unload();
+  fn stop(&mut self, fade: Duration) {
+    self.output.unload(fade);
     self.loaded = false;
     self.playing = false;
   }
@@ -380,6 +478,9 @@ impl<O: AudioOutput> PlaybackService<O> {
       volume: self.volume,
       shuffle: self.queue.shuffle(),
       repeat: self.queue.repeat(),
+      fades: self.fades,
+      crossfade: self.crossfade,
+      discord_status: self.discord_status,
     })
   }
 
@@ -453,6 +554,9 @@ impl<O: AudioOutput> PlaybackService<O> {
       muted: self.muted,
       shuffle: self.queue.shuffle(),
       repeat: self.queue.repeat(),
+      fades: self.fades,
+      crossfade: self.crossfade.seconds(),
+      discord_status: self.discord_status,
     };
     self.notifier.player_changed(&state);
     *lock(&self.inbox.state) = state;

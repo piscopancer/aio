@@ -14,7 +14,12 @@ use crate::domain::tags::ReleaseType;
 pub struct Folder {
   pub id: FolderId,
   pub path: String,
+  /// Songs of the folder, counted even while it is hidden.
   pub track_count: u32,
+  /// The library leaves the folder's songs out, and playlists show them dimmed, until it is shown again.
+  pub hidden: bool,
+  /// The system music folder, which the library always reads: it can be hidden but not removed.
+  pub system: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Type)]
@@ -33,8 +38,18 @@ pub struct Track {
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
   pub duration_ms: u32,
-  /// The file left the library; only playlists still list the track, until the file is back.
-  pub missing: bool,
+  pub presence: Presence,
+}
+
+/// Whether a song can be played from the library; only playlists list the songs that cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Presence {
+  Present,
+  /// Its folder is hidden, until it is shown again.
+  Hidden,
+  /// The file left the library, until it is back.
+  Missing,
 }
 
 /// An artist as a song credits it, enough to link to the artist's page.
@@ -63,6 +78,8 @@ pub struct TrackTags {
   pub composers: Vec<String>,
   pub lyricists: Vec<String>,
   pub comment: Option<String>,
+  /// The lyrics the file's own tag holds, plain or timed as LRC; lyrics kept in a separate `.lrc` file are not among them.
+  pub lyrics: Option<String>,
   /// The file type by its extension, such as `MP3`.
   pub format: String,
   pub bitrate_kbps: Option<u32>,
@@ -173,6 +190,12 @@ pub struct PlayerState {
   pub muted: bool,
   pub shuffle: bool,
   pub repeat: RepeatMode,
+  /// Whether songs fade in and out as they start, stop, pause and resume.
+  pub fades: bool,
+  /// Seconds the end of a song and the start of the next play over each other; zero is off.
+  pub crossfade: u8,
+  /// Whether Discord shows the playing song on the user's profile.
+  pub discord_status: bool,
 }
 
 /// One quality the preview offers, with the size it would roughly take.
@@ -198,6 +221,28 @@ pub struct DownloadPreview {
   pub album: Option<String>,
   pub year: Option<u16>,
   pub qualities: Vec<QualityOption>,
+}
+
+/// A song found by its name to download, either a release on YouTube Music or an uploaded video.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundSong {
+  /// The page the audio is streamed and downloaded from.
+  pub video_url: String,
+  pub title: String,
+  /// The credited artists in order, the main one first; empty for an upload that names none.
+  pub artists: Vec<String>,
+  pub album: Option<String>,
+  pub duration_ms: Option<u32>,
+  pub cover: Option<FoundCover>,
+}
+
+/// What a search by name found: released songs first, then uploaded videos, each best first.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SongFinds {
+  pub songs: Vec<FoundSong>,
+  pub videos: Vec<FoundSong>,
 }
 
 /// How a download folder relates to the library.
@@ -248,6 +293,8 @@ pub enum CoverSource {
 #[serde(rename_all = "camelCase")]
 pub struct DownloadView {
   pub id: DownloadId,
+  /// The page the song is downloaded from, by which a search result finds its download.
+  pub video_url: String,
   pub title: String,
   pub artist: String,
   pub cover: Option<CoverSource>,
@@ -306,7 +353,7 @@ pub struct DownloadSettingsView {
 }
 
 /// Where shown lyrics came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LyricsOrigin {
   /// The song file had them before Aio looked.
@@ -338,6 +385,8 @@ pub struct LyricLine {
 pub enum LyricsView {
   Synced {
     lines: Vec<LyricLine>,
+    /// The LRC text the lines were read from, as it is copied or saved.
+    text: String,
     origin: LyricsOrigin,
   },
   Plain {

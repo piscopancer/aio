@@ -1,20 +1,27 @@
 import { DownloadIcon, SlidersHorizontalIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { DiscordSettings } from '@/components/discord-settings'
 import { DownloadSettings } from '@/components/download-settings'
+import { PlaybackSettings } from '@/components/playback-settings'
 import { UpdateSection } from '@/components/update-section'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+
+/** General tab: how songs fade and whether Discord shows them, then, set apart below, the app version and its updates. */
+function GeneralSettings() {
+  return (
+    <div className="grid gap-6">
+      <PlaybackSettings />
+      <DiscordSettings />
+      <hr />
+      <UpdateSection />
+    </div>
+  )
+}
 
 /** Sections of the settings dialog, in the order the tab list shows them. */
 const sections = [
-  { value: 'general', label: 'General', icon: SlidersHorizontalIcon, content: UpdateSection },
+  { value: 'general', label: 'General', icon: SlidersHorizontalIcon, content: GeneralSettings },
   { value: 'downloads', label: 'Downloads', icon: DownloadIcon, content: DownloadSettings },
 ] as const
 
@@ -23,10 +30,9 @@ export function SettingsDialog({ children }: { children: ReactNode }) {
   return (
     <Dialog>
       <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent className="h-[calc(100dvh-4rem)] max-w-4xl bg-background">
+      <DialogContent aria-describedby={undefined} className="h-[calc(100dvh-4rem)] max-w-4xl bg-background">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>Changes apply right away.</DialogDescription>
         </DialogHeader>
         <Tabs orientation="vertical" defaultValue={sections[0].value} className="min-h-0 flex-1 p-6">
           <TabsList className="w-44 shrink-0">

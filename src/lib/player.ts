@@ -1,3 +1,4 @@
+import { replaceEqualDeep } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { create } from 'zustand'
 import {
@@ -21,13 +22,22 @@ const initialState = await commands.getPlayerState()
 /** Mirror of the backend player; Rust owns the state and pushes every change. */
 export const usePlayer = create<PlayerState>()(() => initialState)
 
+/** Takes a full state from the backend, keeping the objects of the queue, its tracks and the context that did not change, so a pause, a volume step or a shuffle does not hand every reader of the playing track a new copy of it; queue items are matched by key, as a shuffle moves them. */
+function receive(next: PlayerState) {
+  usePlayer.setState((state) => {
+    const before = new Map(state.queue.map((item) => [item.key, item]))
+    const queue = next.queue.map((item) => replaceEqualDeep(before.get(item.key), item))
+    return replaceEqualDeep(state, { ...next, queue })
+  })
+}
+
 /** Subscribes the mirror to backend events, then re-reads the state to cover changes made before the subscription. */
 export async function syncPlayer() {
   await Promise.all([
-    events.playerStateChanged.listen(({ payload }) => usePlayer.setState(payload)),
+    events.playerStateChanged.listen(({ payload }) => receive(payload)),
     events.playbackProgress.listen(({ payload }) => usePlayer.setState(payload)),
   ])
-  usePlayer.setState(await commands.getPlayerState())
+  receive(await commands.getPlayerState())
 }
 
 export function currentItem(state: PlayerState) {
@@ -94,7 +104,13 @@ export const player = {
   setMuted: (muted: boolean) => report(commands.setMuted(muted)),
   setShuffle: (shuffle: boolean) => report(commands.setShuffle(shuffle)),
   setRepeat: (repeat: RepeatMode) => report(commands.setRepeat(repeat)),
+  setFades: (fades: boolean) => report(commands.setFades(fades)),
+  setCrossfade: (seconds: number) => report(unwrap(commands.setCrossfade(seconds))),
+  setDiscordStatus: (shown: boolean) => report(commands.setDiscordStatus(shown)),
 }
+
+/** The longest crossfade in seconds, as the backend allows it. */
+export const CROSSFADE_MAX = 12
 
 /** Step of the repeat button: off, then the whole queue, then the current track. */
 export const nextRepeat = { off: 'all', all: 'one', one: 'off' } as const satisfies Record<RepeatMode, RepeatMode>

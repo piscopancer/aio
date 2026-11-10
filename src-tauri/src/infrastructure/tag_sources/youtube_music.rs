@@ -1,14 +1,14 @@
 //! YouTube Music, asked through the search its own web player uses, which needs no key. Its songs are releases with an
 //! album and a cover; when none of them is the song asked, its videos are asked too, since many songs exist there only
-//! as uploads named `Artist - Title`.
+//! as uploads named `Artist - Title`. The same search finds the songs to download by name.
 
 use serde::Serialize;
 use serde_json::Value;
 
 use super::{RESULTS, ReadJson, agent};
 use crate::application::error::AppResult;
-use crate::application::ports::{SongLookup, TagFinder};
-use crate::application::views::{FoundCover, TagMatch, TagSource};
+use crate::application::ports::{SongFinder, SongLookup, TagFinder};
+use crate::application::views::{FoundCover, FoundSong, SongFinds, TagMatch, TagSource};
 use crate::domain::tag_search::{answers_title, credits, split_credit, upload_credit};
 use crate::infrastructure::tools::fetch_error;
 
@@ -104,8 +104,17 @@ fn clock_ms(clock: &str) -> Option<u32> {
     .map(|seconds| seconds * 1000)
 }
 
+/// The id of the video a result plays.
+fn video_id(item: &Value) -> Option<&str> {
+  item.pointer("/playlistItemData/videoId")?.as_str()
+}
+
+fn watch_url(id: &str) -> String {
+  format!("https://music.youtube.com/watch?v={id}")
+}
+
 /// A found song, which names its artists, album and length, with its album cover at any size.
-fn song(item: &Value) -> Option<TagMatch> {
+fn song(item: &Value) -> Option<FoundSong> {
   let title = text(&runs(item, 0));
   let credits = runs(item, 1);
   let parts = parts(&credits);
@@ -117,17 +126,13 @@ fn song(item: &Value) -> Option<TagMatch> {
     .as_str()?;
   // the address ends in the size it is served at, such as `=w120-h120-l90-rj`
   let (base, _) = thumbnail.rsplit_once('=')?;
-  Some(TagMatch {
-    source: TagSource::YoutubeMusic,
+  Some(FoundSong {
+    video_url: watch_url(video_id(item)?),
     artists: split_credit(&text(parts.first()?)),
     album: credits
       .iter()
       .find(|run| run.page == Some(ALBUM_PAGE))
       .map(|run| run.text.to_owned()),
-    year: None,
-    track_no: None,
-    disc_no: None,
-    genre: None,
     duration_ms: parts.last().and_then(|part| clock_ms(&text(part))),
     cover: Some(FoundCover {
       thumb: format!("{base}=w250-h250-l90-rj"),
@@ -139,7 +144,7 @@ fn song(item: &Value) -> Option<TagMatch> {
 
 /// A found video: its artist and title come from its name when it is named `Artist - Title`, or else the channel is
 /// the artist when it is an artist's own; its picture is the video's.
-fn video(item: &Value) -> Option<TagMatch> {
+fn video(item: &Value) -> Option<FoundSong> {
   let name = text(&runs(item, 0));
   let credits = runs(item, 1);
   let parts = parts(&credits);
@@ -149,23 +154,35 @@ fn video(item: &Value) -> Option<TagMatch> {
     None if channel.iter().any(|run| run.page == Some(ARTIST_PAGE)) => (vec![text(channel)], name),
     None => (Vec::new(), name),
   };
-  let id = item.pointer("/playlistItemData/videoId")?.as_str()?;
+  let id = video_id(item)?;
   let picture = format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg");
-  Some(TagMatch {
-    source: TagSource::YoutubeMusic,
+  Some(FoundSong {
+    video_url: watch_url(id),
     title,
     artists,
     album: None,
-    year: None,
-    track_no: None,
-    disc_no: None,
-    genre: None,
     duration_ms: parts.last().and_then(|part| clock_ms(&text(part))),
     cover: Some(FoundCover {
       thumb: picture.clone(),
       full: picture,
     }),
   })
+}
+
+/// The tags a found song gives, which never include a year, numbers or a genre.
+fn tag_match(found: FoundSong) -> TagMatch {
+  TagMatch {
+    source: TagSource::YoutubeMusic,
+    title: found.title,
+    artists: found.artists,
+    album: found.album,
+    year: None,
+    track_no: None,
+    disc_no: None,
+    genre: None,
+    duration_ms: found.duration_ms,
+    cover: found.cover,
+  }
 }
 
 pub struct YoutubeMusic {
@@ -177,7 +194,7 @@ impl YoutubeMusic {
     Self { http: agent() }
   }
 
-  fn search(&self, words: &str, filter: &str, read: fn(&Value) -> Option<TagMatch>) -> AppResult<Vec<TagMatch>> {
+  fn search(&self, words: &str, filter: &str, read: fn(&Value) -> Option<FoundSong>) -> AppResult<Vec<FoundSong>> {
     let (client_name, client_version) = CLIENT;
     let query = Query {
       context: Context {
@@ -210,15 +227,30 @@ impl TagFinder for YoutubeMusic {
 
   fn find(&self, song_asked: &SongLookup<'_>) -> AppResult<Vec<TagMatch>> {
     let words = song_asked.words();
-    let mut found = self.search(&words, SONGS, song)?;
+    let mut found: Vec<TagMatch> = self.search(&words, SONGS, song)?.into_iter().map(tag_match).collect();
     let answered = found.iter().any(|found| {
       answers_title(&found.title, song_asked.title)
         && song_asked.artist.is_none_or(|artist| credits(&found.artists, artist))
     });
     if !answered {
-      found.extend(self.search(&words, VIDEOS, video)?);
+      found.extend(self.search(&words, VIDEOS, video)?.into_iter().map(tag_match));
     }
     Ok(found)
+  }
+}
+
+impl SongFinder for YoutubeMusic {
+  fn find_songs(&self, query: &str) -> AppResult<SongFinds> {
+    // the two shelves are asked at once, so the results take as long as the slower of them
+    let (songs, videos) = std::thread::scope(|scope| {
+      let videos = scope.spawn(|| self.search(query, VIDEOS, video));
+      let songs = self.search(query, SONGS, song);
+      (songs, videos.join().unwrap_or_else(|_| Ok(Vec::new())))
+    });
+    Ok(SongFinds {
+      songs: songs?,
+      videos: videos?,
+    })
   }
 }
 

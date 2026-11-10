@@ -1,18 +1,24 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { CalendarPlusIcon, HistoryIcon, type LucideIcon, Music2Icon } from 'lucide-react'
 import type { Playlist } from '@/bindings'
 import { type PlaylistOrder, useLayout } from '@/lib/layout'
 import { splitPinned } from '@/lib/pins'
 import { mutations, queries } from '@/lib/query'
 
-/** What each order is called in its menu and hint, and how it ranks two playlists; ties keep the newest first, as they arrive. */
+/** What each order is called in its menu and hint, the icon beside it, and how it ranks two playlists; ties keep the newest first, as they arrive. */
 export const ORDERS = {
   played: {
     label: 'Recently played',
+    icon: HistoryIcon,
     compare: (a: Playlist, b: Playlist) => (b.playedAt ?? -1) - (a.playedAt ?? -1),
   },
-  created: { label: 'Date created', compare: (a: Playlist, b: Playlist) => b.createdAt - a.createdAt },
-  size: { label: 'Most songs', compare: (a: Playlist, b: Playlist) => b.trackCount - a.trackCount },
-} satisfies Record<PlaylistOrder, { label: string; compare: (a: Playlist, b: Playlist) => number }>
+  created: {
+    label: 'Date created',
+    icon: CalendarPlusIcon,
+    compare: (a: Playlist, b: Playlist) => b.createdAt - a.createdAt,
+  },
+  size: { label: 'Most songs', icon: Music2Icon, compare: (a: Playlist, b: Playlist) => b.trackCount - a.trackCount },
+} satisfies Record<PlaylistOrder, { label: string; icon: LucideIcon; compare: (a: Playlist, b: Playlist) => number }>
 
 /** The playlists as the sidebar lists them: the pinned ones in the order set by hand, then the rest in `order`. */
 export function inListOrder(playlists: readonly Playlist[], order: PlaylistOrder) {

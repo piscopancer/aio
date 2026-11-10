@@ -44,6 +44,8 @@ tauri-plugin-opener = "2"
 rusty-chromaprint = "0.3"
 base64 = "0.22"
 opus-pure = "0.2.3"
+# the playing song as the user's status in Discord, sent over its local connection
+discord-rich-presence = "1.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

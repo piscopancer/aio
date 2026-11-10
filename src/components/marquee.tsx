@@ -8,6 +8,13 @@ const REST_SECONDS = 2
 /** Pace of the run, in pixels per second. */
 const PIXELS_PER_SECOND = 40
 
+/** Whether the text of `box`, or of `text` within it while running, is wider than the box by any fraction of a pixel, as the ellipsis cuts it at any; the measures are fractional, where `scrollWidth` would round a line just too wide down to the box and leave it cut but still. */
+const overflows = (box: HTMLElement, text: HTMLElement | null = null) => {
+  const range = document.createRange()
+  range.selectNodeContents(text ?? box)
+  return range.getBoundingClientRect().width > box.getBoundingClientRect().width + 0.01
+}
+
 /** When the text runs: all the time, or only while the pointer is over the card or row it belongs to. */
 type MarqueePlay = 'always' | 'hover'
 
@@ -40,7 +47,10 @@ export function Marquee({
     const box = boxRef.current
     if (play !== 'hover' || box === null) return undefined
     const host = box.closest('.group') ?? box
-    const enter = () => setHovered(true)
+    // a line that fits has nothing to run, so hovering it renders nothing
+    const enter = () => {
+      if (overflows(box)) setHovered(true)
+    }
     const leave = () => setHovered(false)
     host.addEventListener('pointerenter', enter)
     host.addEventListener('pointerleave', leave)
@@ -55,7 +65,7 @@ export function Marquee({
   useLayoutEffect(() => {
     const box = boxRef.current
     if (!active || box === null) return undefined
-    const measure = () => setOverflowing((firstRef.current?.offsetWidth ?? box.scrollWidth) > box.clientWidth + 1)
+    const measure = () => setOverflowing(overflows(box, firstRef.current))
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(box)

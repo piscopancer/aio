@@ -14,6 +14,8 @@ pub enum LibraryError {
   Overlaps { existing: String },
   #[error("this folder is not in the library")]
   NotInLibrary,
+  #[error("the system music folder stays in the library; it can be hidden instead")]
+  SystemFolder,
 }
 
 /// Absolute, normalized path of a library folder; it is the folder's identity.
@@ -62,6 +64,11 @@ impl FolderPath {
     let (a, b) = (self.key(), other.key());
     a.starts_with(&b) || b.starts_with(&a)
   }
+
+  /// True when `other` is this folder or sits somewhere inside it.
+  fn holds(&self, other: &Self) -> bool {
+    other.key().starts_with(&self.key())
+  }
 }
 
 impl PartialEq for FolderPath {
@@ -76,11 +83,29 @@ impl Eq for FolderPath {}
 #[derive(Debug, Clone, Default)]
 pub struct LibraryFolders {
   folders: Vec<FolderPath>,
+  /// The system music folder, which the library always reads, either as a folder of its own or through one holding it.
+  system: Option<FolderPath>,
 }
 
 impl LibraryFolders {
   pub fn restore(folders: Vec<FolderPath>) -> Self {
-    Self { folders }
+    Self { folders, system: None }
+  }
+
+  /// Makes the library always read `system`, the system music folder: unless a folder of the library already holds it, it is added and the folders inside it merge into it; true when it was added.
+  pub fn keep_system(&mut self, system: FolderPath) -> bool {
+    let added = self.containing(&system).is_none();
+    if added {
+      self.folders.retain(|folder| !system.holds(folder));
+      self.folders.push(system.clone());
+    }
+    self.system = Some(system);
+    added
+  }
+
+  /// True when `folder` is the system music folder, which can be hidden but not removed.
+  pub fn is_system(&self, folder: &FolderPath) -> bool {
+    self.system.as_ref() == Some(folder)
   }
 
   pub fn folders(&self) -> &[FolderPath] {
@@ -106,14 +131,18 @@ impl LibraryFolders {
     self.folders.iter().find(|f| key.starts_with(&f.key()))
   }
 
-  pub fn remove(&mut self, folder: &FolderPath) -> Result<(), LibraryError> {
+  /// Removes a folder other than the system one; true when the system folder, which the removed folder held, was added back in its place.
+  pub fn remove(&mut self, folder: &FolderPath) -> Result<bool, LibraryError> {
+    if self.is_system(folder) {
+      return Err(LibraryError::SystemFolder);
+    }
     let index = self
       .folders
       .iter()
       .position(|f| f == folder)
       .ok_or(LibraryError::NotInLibrary)?;
     self.folders.remove(index);
-    Ok(())
+    Ok(self.system.clone().is_some_and(|system| self.keep_system(system)))
   }
 }
 
@@ -170,5 +199,34 @@ mod tests {
   fn removing_an_unknown_folder_fails() {
     let mut library = LibraryFolders::default();
     assert_eq!(library.remove(&path("music")).unwrap_err(), LibraryError::NotInLibrary);
+  }
+
+  #[test]
+  fn the_system_folder_takes_in_the_folders_inside_it() {
+    let mut library = LibraryFolders::restore(vec![path("music/rock"), path("films")]);
+    assert!(library.keep_system(path("music")));
+    assert_eq!(library.folders(), [path("films"), path("music")]);
+  }
+
+  #[test]
+  fn the_system_folder_is_not_added_under_a_folder_holding_it() {
+    let mut library = LibraryFolders::restore(vec![path("home")]);
+    assert!(!library.keep_system(path("home/music")));
+    assert_eq!(library.folders(), [path("home")]);
+  }
+
+  #[test]
+  fn the_system_folder_cannot_be_removed() {
+    let mut library = LibraryFolders::default();
+    library.keep_system(path("music"));
+    assert_eq!(library.remove(&path("music")).unwrap_err(), LibraryError::SystemFolder);
+  }
+
+  #[test]
+  fn the_system_folder_comes_back_when_the_folder_holding_it_leaves() {
+    let mut library = LibraryFolders::restore(vec![path("home")]);
+    library.keep_system(path("home/music"));
+    assert_eq!(library.remove(&path("home")), Ok(true));
+    assert_eq!(library.folders(), [path("home/music")]);
   }
 }

@@ -15,14 +15,15 @@ use crate::domain::download::{AudioQuality, Candidate, VideoFacts};
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{PlaybackContext, QueueSnapshot, RepeatMode, Volume};
+use crate::domain::playback::{Crossfade, PlaybackContext, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 use crate::domain::tags::{ReleaseType, SongTags};
 
 pub trait FolderRepository: Send + Sync {
   fn load_folders(&self) -> AppResult<LibraryFolders>;
-  /// Stores exactly this set of folders; tracks of removed folders go with them.
+  /// Stores exactly this set of folders; tracks of removed folders move to the folder now holding them, or go with them.
   fn save_folders(&self, folders: &LibraryFolders) -> AppResult<()>;
+  fn set_folder_hidden(&self, folder: &FolderPath, hidden: bool) -> AppResult<()>;
 }
 
 pub trait PlaylistRepository: Send + Sync {
@@ -157,7 +158,14 @@ pub trait LibraryQueries: Send + Sync {
       PlaybackContext::Songs => self.tracks(),
       PlaybackContext::Album { id } => Ok(self.album(id)?.tracks),
       PlaybackContext::Artist { id } => Ok(self.artist(id)?.tracks),
-      PlaybackContext::Playlist { id } => Ok(self.playlist(id)?.tracks.into_iter().filter(|t| !t.missing).collect()),
+      PlaybackContext::Playlist { id } => Ok(
+        self
+          .playlist(id)?
+          .tracks
+          .into_iter()
+          .filter(|t| t.presence == Presence::Present)
+          .collect(),
+      ),
       PlaybackContext::Folder { id } => Ok(self.folder(id)?.tracks),
     }
   }
@@ -168,6 +176,11 @@ pub struct PlaybackSettings {
   pub volume: Volume,
   pub shuffle: bool,
   pub repeat: RepeatMode,
+  /// Whether songs fade in and out as they start, stop, pause and resume.
+  pub fades: bool,
+  pub crossfade: Crossfade,
+  /// Whether Discord shows the playing song on the user's profile.
+  pub discord_status: bool,
 }
 
 /// What the player was doing when the app last ran: its queue, each song named by its id, and the position in the
@@ -188,18 +201,25 @@ pub trait SettingsStore: Send + Sync {
   fn save_player_position(&self, position_ms: u32) -> AppResult<()>;
 }
 
-/// The sound device; implementations live on the audio thread and need not be `Send`.
+/// The sound device; implementations live on the audio thread and need not be `Send`. A `fade` of zero cuts at once.
 pub trait AudioOutput {
-  /// Replaces whatever is loaded with this track, starting at its beginning.
-  fn load(&mut self, track: &Track, volume: Volume, play: bool) -> AppResult<()>;
-  fn unload(&mut self);
-  fn play(&mut self);
-  fn pause(&mut self);
+  /// Replaces whatever is loaded with this track, starting at its beginning; the track replaced fades out over `fade`
+  /// while this one fades in over it, at once when `play`.
+  fn load(&mut self, track: &Track, volume: Volume, play: bool, fade: Duration) -> AppResult<()>;
+  /// Fades the loaded track out and lets it go.
+  fn unload(&mut self, fade: Duration);
+  /// Cuts off the tracks still fading out, letting go of their files.
+  fn cut_leaving(&mut self);
+  fn play(&mut self, fade: Duration);
+  /// Fades the loaded track out and holds it where it then is, along with any still fading out.
+  fn pause(&mut self, fade: Duration);
   fn seek(&mut self, position: Duration) -> AppResult<()>;
   fn position(&self) -> Duration;
   /// True when a loaded track has played to its end.
   fn finished(&self) -> bool;
   fn set_volume(&mut self, volume: Volume);
+  /// Fades out the last `length` of the loaded track as it plays to its end; zero plays it to the end at full.
+  fn fade_tail(&mut self, length: Duration);
 }
 
 /// Outgoing notifications to whoever displays the app.
@@ -302,9 +322,16 @@ pub trait MediaSource: Send + Sync {
   /// Songs on YouTube Music matching the query, best first.
   fn search_songs(&self, query: &str) -> AppResult<Vec<Candidate>>;
   fn spotify_track(&self, id: &str) -> AppResult<SpotifyTrack>;
+  /// A direct address of the audio of the video at `url`, which plays for a few hours before it expires.
+  fn audio_stream(&self, url: &str) -> AppResult<String>;
   fn fetch(&self, job: &FetchJob<'_>, progress: &mut dyn FnMut(FetchProgress)) -> AppResult<()>;
   /// Writes the tags and, when given, a square cover made from the image `cover` points to.
   fn write_tags(&self, path: &Path, tags: &SongTags, cover: Option<&CoverSource>) -> AppResult<()>;
+}
+
+/// A catalogue that finds songs to download by their name.
+pub trait SongFinder: Send + Sync {
+  fn find_songs(&self, query: &str) -> AppResult<SongFinds>;
 }
 
 /// The command line programs downloads run on.
@@ -391,6 +418,8 @@ pub trait LyricsStore: Send + Sync {
   fn save_lyrics_record(&self, track: TrackId, record: &LyricsRecord) -> AppResult<()>;
   fn unwritten_lyrics(&self) -> AppResult<Vec<UnwrittenLyrics>>;
   fn mark_lyrics_written(&self, track: TrackId) -> AppResult<()>;
+  /// Drops what was found or checked for the song, so its lyrics are looked up afresh.
+  fn forget_lyrics(&self, track: TrackId) -> AppResult<()>;
 }
 
 /// What a song is looked up by in the online music databases: the title and main artist it is known by now, its file

@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { Disc3Icon, MicVocalIcon, TagsIcon, XIcon } from 'lucide-react'
+import { Disc3Icon, MicVocalIcon, PencilIcon, TagsIcon, XIcon } from 'lucide-react'
 import { type ComponentProps, useRef, useState } from 'react'
 import type { Album } from '@/bindings'
+import { ChipLabel } from '@/components/chip-label'
 import { Cover } from '@/components/cover'
 import { Combobox } from '@/components/ui/combobox'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import type { FieldLabelProps } from '@/components/ui/field-label'
 import { credit, plural } from '@/lib/format'
 import { queries } from '@/lib/query'
@@ -43,7 +45,7 @@ const NAME_BREAK = ','
 /** One value the library already knows, offered while typing. */
 type Known = { key: string | number; label: string; subtitle: string; cover?: string | null }
 
-/** A list of names or words as chips in order, the first one leading, that can be dragged into another order or removed, and a text field under them that suggests the `known` values and adds the typed one on comma, Enter or leaving the field; with `kind`, every chip and suggestion shows its picture. */
+/** A list of names or words as chips in order, the first one leading, that can be dragged into another order, removed, or taken back into the text field to be edited by a double click, from their context menu or by dropping them on it, and a text field under them that suggests the `known` values and adds the typed one on comma, Enter or leaving the field; with `kind`, every chip and suggestion shows its picture. */
 function ChipsField({
   label,
   icon,
@@ -65,6 +67,9 @@ function ChipsField({
 }) {
   const [draft, setDraft] = useState('')
   const dragged = useRef<number | null>(null)
+  const input = useRef<HTMLInputElement>(null)
+  /** Where a chip taken back into the text field returns once its name is added again. */
+  const returning = useRef<number | null>(null)
   const picture = (name: string, className?: string) =>
     kind === undefined ? undefined : (
       <Cover src={known.find((item) => item.label === name.trim())?.cover ?? null} kind={kind} className={className} />
@@ -83,11 +88,34 @@ function ChipsField({
 
   const add = (names: readonly string[]) => {
     const fresh = names.map((name) => name.trim()).filter((name) => name !== '' && !listed(name))
-    if (fresh.length > 0) onValueChange([...value, ...fresh])
+    if (fresh.length === 0) return
+    const at = returning.current ?? value.length
+    returning.current = null
+    onValueChange(value.toSpliced(at, 0, ...fresh))
   }
   const commit = () => {
     add([draft])
     setDraft('')
+    // an edited name cleared away stays removed, and the next one typed goes last again
+    returning.current = null
+  }
+  const remove = (index: number) => onValueChange(value.filter((_, at) => at !== index))
+  /** Takes the chip at `index` back into the text field, adding whatever was typed there first so it is not lost. */
+  const edit = (index: number) => {
+    const name = value[index]
+    if (name === undefined) return
+    const rest = value.filter((_, at) => at !== index)
+    const typed = draft.trim()
+    const kept =
+      typed === '' || rest.some((item) => item.toLowerCase() === typed.toLowerCase()) ? rest : [...rest, typed]
+    onValueChange(kept)
+    returning.current = Math.min(index, kept.length)
+    setDraft(name)
+  }
+  /** Edits the chip at `index` from a double click or a drop, the field taking the focus at once. */
+  const editHere = (index: number) => {
+    edit(index)
+    input.current?.focus()
   }
   const move = (from: number, to: number) => {
     const next = [...value]
@@ -117,7 +145,8 @@ function ChipsField({
         setDraft('')
       }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' && options.length === 0 && draft.trim() !== '') {
+        // a highlighted suggestion has taken Enter before this
+        if (event.key === 'Enter' && draft.trim() !== '') {
           // the name goes in as a chip instead of submitting the form
           event.preventDefault()
           commit()
@@ -127,6 +156,18 @@ function ChipsField({
         }
       }}
       onBlur={commit}
+      ref={input}
+      onDragOver={(event) => {
+        if (dragged.current === null) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      }}
+      onDrop={(event) => {
+        if (dragged.current === null) return
+        event.preventDefault()
+        editHere(dragged.current)
+        dragged.current = null
+      }}
       // a name not in the library yet still gets a blank picture, as what it will create
       art={draft.trim() === '' ? undefined : picture(draft)}
       className={className}
@@ -134,38 +175,58 @@ function ChipsField({
       {value.length > 0 && (
         <ul className="flex flex-wrap gap-1.5">
           {value.map((name, index) => (
-            <li
-              key={name}
-              draggable
-              onDragStart={(event) => {
-                dragged.current = index
-                event.dataTransfer.effectAllowed = 'move'
-              }}
-              onDragOver={(event) => {
-                if (dragged.current === null) return
-                event.preventDefault()
-                if (dragged.current !== index) {
-                  move(dragged.current, index)
-                  dragged.current = index
-                }
-              }}
-              onDragEnd={() => (dragged.current = null)}
-              className={cn(
-                'flex cursor-grab items-center gap-1.5 rounded-full bg-foreground/10 py-0.5 pr-0.5 text-sm active:cursor-grabbing',
-                kind === undefined ? 'pl-2.5' : 'pl-0.5',
-              )}
-            >
-              {picture(name, 'size-6')}
-              <span className="max-w-48 truncate">{name}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${name}`}
-                onClick={() => onValueChange(value.filter((_, at) => at !== index))}
-                className="flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            <ContextMenu key={name}>
+              <ContextMenuTrigger asChild>
+                <li
+                  draggable
+                  onDragStart={(event) => {
+                    dragged.current = index
+                    event.dataTransfer.effectAllowed = 'move'
+                  }}
+                  onDragOver={(event) => {
+                    if (dragged.current === null) return
+                    event.preventDefault()
+                    if (dragged.current !== index) {
+                      move(dragged.current, index)
+                      dragged.current = index
+                    }
+                  }}
+                  onDragEnd={() => (dragged.current = null)}
+                  onDoubleClick={() => editHere(index)}
+                  className={cn(
+                    'flex cursor-grab items-center gap-1.5 rounded-full bg-foreground/10 py-0.5 pr-0.5 text-sm active:cursor-grabbing',
+                    kind === undefined ? 'pl-2.5' : 'pl-0.5',
+                  )}
+                >
+                  {picture(name, 'size-6')}
+                  <ChipLabel>{name}</ChipLabel>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${name}`}
+                    onClick={() => remove(index)}
+                    className="flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                </li>
+              </ContextMenuTrigger>
+              {/* the field takes the focus only once the menu is gone, as the open menu keeps it inside */}
+              <ContextMenuContent
+                onCloseAutoFocus={(event) => {
+                  event.preventDefault()
+                  if (returning.current !== null) input.current?.focus()
+                }}
               >
-                <XIcon className="size-3.5" />
-              </button>
-            </li>
+                <ContextMenuItem onSelect={() => edit(index)}>
+                  <PencilIcon />
+                  Edit
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => remove(index)}>
+                  <XIcon />
+                  Remove
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
           ))}
         </ul>
       )}

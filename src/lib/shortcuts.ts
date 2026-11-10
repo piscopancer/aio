@@ -2,22 +2,20 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { SEARCH_INPUT_ID } from '@/components/search'
-import { toggleFullscreenLyrics, togglePanel, toggleSidebar } from '@/lib/layout'
+import { setCreatingPlaylist, toggleFullscreenLyrics, togglePanel, toggleSidebar } from '@/lib/layout'
 import { useLocatePlaying } from '@/lib/locate'
-import { nextRepeat, player, usePlayer } from '@/lib/player'
+import { currentItem, nextRepeat, player, usePlayer } from '@/lib/player'
+import { editTrack } from '@/lib/track-editor'
 
 /** `MouseEvent.button` values of the side buttons most mice have. */
 const MouseButton = { back: 3, forward: 4 } as const
 
-/** Whether the key press lands in a field the user types into. */
+/** Whether the key press lands in a field the user types into, an editor such as the lyrics one included. */
 function editsText(target: EventTarget | null) {
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
-}
-
-/** Whether the key press belongs to the focused element, which gives Space its own meaning. */
-function ownsSpace(target: EventTarget | null) {
   return (
-    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLButtonElement
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
   )
 }
 
@@ -66,14 +64,32 @@ export function useAppShortcuts() {
         else player.next()
         return
       }
+      // with Ctrl, so a plain Space stays with whatever has focus, a space in a text field or a press of a button
+      if (ctrlOnly && event.code === 'Space') {
+        event.preventDefault()
+        player.toggle()
+        return
+      }
       if (ctrlOnly && event.code === 'KeyM') {
         event.preventDefault()
         player.setMuted(!usePlayer.getState().muted)
         return
       }
+      // the webview would open a new window instead
+      if (ctrlOnly && event.code === 'KeyN') {
+        event.preventDefault()
+        setCreatingPlaylist(true)
+        return
+      }
       if (ctrlOnly && event.code === 'KeyJ') {
         event.preventDefault()
         locatePlaying()
+        return
+      }
+      if (ctrlOnly && event.code === 'KeyE') {
+        event.preventDefault()
+        const playing = currentItem(usePlayer.getState())?.track
+        if (playing !== undefined) editTrack(playing)
         return
       }
       if (ctrlOnly && event.code === 'KeyS') {
@@ -100,10 +116,6 @@ export function useAppShortcuts() {
           search.select()
         }
         return
-      }
-      if (event.code === 'Space' && !event.altKey && !event.ctrlKey && !ownsSpace(event.target)) {
-        event.preventDefault()
-        player.toggle()
       }
     }
     const onMouseUp = (event: MouseEvent) => {

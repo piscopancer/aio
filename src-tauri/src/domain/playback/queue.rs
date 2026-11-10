@@ -45,6 +45,16 @@ pub enum Removal {
   },
 }
 
+/// What plays after the current entry when it ends on its own.
+#[derive(Debug, Clone, Copy)]
+pub enum Following<'a, T> {
+  /// Nothing, as the queue ends there.
+  End,
+  /// An entry that is not known yet, since a shuffled queue is mixed again when it wraps around.
+  Unknown,
+  Entry(&'a QueueEntry<T>),
+}
+
 /// What of a queue outlasts the app: where it was started from, its items in play order, the original order of a
 /// shuffled queue as places among them, and the current place.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,18 +304,28 @@ impl<T: Clone> Queue<T> {
     self.repeat = repeat;
   }
 
-  /// Moves to the next entry; returns false when the end was reached, leaving the first entry current.
-  pub fn advance(&mut self, reason: Advance) -> bool {
+  /// Moves to the next entry; returns false when the end was reached, leaving the first entry current. A shuffled
+  /// queue that wraps around to its start is shuffled again for the new round.
+  pub fn advance(&mut self, reason: Advance, rng: &mut impl Rng) -> bool {
     let Some(current) = self.current else { return false };
-    match policy::next_index(self.repeat, current, self.entries.len(), reason) {
-      Some(next) => {
-        self.current = Some(next);
-        true
-      }
-      None => {
-        self.current = Some(0);
-        false
-      }
+    let next = policy::next_index(self.repeat, current, self.entries.len(), reason);
+    let wrapped = current + 1 == self.entries.len() && next != Some(current);
+    if wrapped && self.shuffle {
+      self.reshuffle_round(current, rng);
+    }
+    self.current = Some(next.unwrap_or(0));
+    next.is_some()
+  }
+
+  /// The entry that plays once the current one has played to its end, as far as it is known yet.
+  pub fn following(&self) -> Following<'_, T> {
+    let Some(current) = self.current else {
+      return Following::End;
+    };
+    match policy::next_index(self.repeat, current, self.entries.len(), Advance::TrackEnded) {
+      None => Following::End,
+      Some(next) if self.shuffle && current + 1 == self.entries.len() && next != current => Following::Unknown,
+      Some(next) => Following::Entry(&self.entries[next]),
     }
   }
 
@@ -335,6 +355,19 @@ impl<T: Clone> Queue<T> {
       .iter()
       .position(|entry| entry.key == key)
       .ok_or(PlaybackError::EntryNotInQueue)
+  }
+
+  /// Mixes the queue again for the next round, keeping the entry at `ended`, which just played, away from the start.
+  fn reshuffle_round(&mut self, ended: usize, rng: &mut impl Rng) {
+    let len = self.entries.len();
+    if len < 2 {
+      return;
+    }
+    let ended = self.entries[ended].key;
+    self.entries.shuffle(rng);
+    if self.entries[0].key == ended {
+      self.entries.swap(0, rng.random_range(1..len));
+    }
   }
 
   fn shuffle_entries(&mut self, rng: &mut impl Rng) {
@@ -403,7 +436,7 @@ mod tests {
     queue.set_shuffle(true, &mut rng());
     assert_eq!(current(&queue), Some(3));
     assert_eq!(queue.current_index(), Some(0));
-    queue.advance(Advance::Skipped);
+    queue.advance(Advance::Skipped, &mut rng());
     let playing = current(&queue);
     queue.set_shuffle(false, &mut rng());
     assert_eq!(items(&queue), [1, 2, 3, 4, 5]);
@@ -411,9 +444,56 @@ mod tests {
   }
 
   #[test]
+  fn a_shuffled_queue_is_mixed_again_each_round() {
+    let mut queue = queue(&[1, 2, 3, 4, 5], 0, true, RepeatMode::All);
+    let mut rng = rng();
+    let mut rounds = vec![items(&queue)];
+    for _ in 0..4 {
+      for _ in 0..4 {
+        queue.advance(Advance::Skipped, &mut rng);
+      }
+      let ended = current(&queue);
+      queue.advance(Advance::Skipped, &mut rng);
+      assert_eq!(queue.current_index(), Some(0));
+      assert_ne!(current(&queue), ended);
+      rounds.push(items(&queue));
+    }
+    assert!(rounds.windows(2).any(|pair| pair[0] != pair[1]));
+    queue.set_shuffle(false, &mut rng);
+    assert_eq!(items(&queue), [1, 2, 3, 4, 5]);
+  }
+
+  #[test]
+  fn an_unshuffled_queue_keeps_its_order_round_after_round() {
+    let mut queue = queue(&[1, 2, 3], 2, false, RepeatMode::All);
+    queue.advance(Advance::Skipped, &mut rng());
+    assert_eq!(items(&queue), [1, 2, 3]);
+    assert_eq!(current(&queue), Some(1));
+  }
+
+  #[test]
+  fn the_following_entry_is_named_unless_a_new_round_is_still_to_be_mixed() {
+    let item = |following: Following<'_, u32>| match following {
+      Following::Entry(entry) => Some(*entry.item()),
+      Following::End | Following::Unknown => None,
+    };
+    assert_eq!(item(queue(&[1, 2, 3], 0, false, RepeatMode::Off).following()), Some(2));
+    assert_eq!(item(queue(&[1, 2, 3], 1, false, RepeatMode::One).following()), Some(2));
+    assert_eq!(item(queue(&[1, 2, 3], 2, false, RepeatMode::All).following()), Some(1));
+    assert!(matches!(
+      queue(&[1, 2, 3], 2, false, RepeatMode::Off).following(),
+      Following::End
+    ));
+    let mut shuffled = queue(&[1, 2, 3], 0, true, RepeatMode::All);
+    shuffled.advance(Advance::Skipped, &mut rng());
+    shuffled.advance(Advance::Skipped, &mut rng());
+    assert!(matches!(shuffled.following(), Following::Unknown));
+  }
+
+  #[test]
   fn reaching_the_end_rewinds_to_the_first_entry() {
     let mut queue = queue(&[1, 2], 1, false, RepeatMode::Off);
-    assert!(!queue.advance(Advance::TrackEnded));
+    assert!(!queue.advance(Advance::TrackEnded, &mut rng()));
     assert_eq!(current(&queue), Some(1));
   }
 
@@ -452,7 +532,7 @@ mod tests {
   #[test]
   fn a_snapshot_restores_the_order_and_the_place() {
     let mut saved = queue(&[1, 2, 3, 4, 5], 2, true, RepeatMode::Off);
-    saved.advance(Advance::Skipped);
+    saved.advance(Advance::Skipped, &mut rng());
     let playing = current(&saved);
     let snapshot = saved.snapshot(|item| *item);
 

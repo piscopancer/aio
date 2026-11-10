@@ -29,6 +29,7 @@ import {
   LOCATE_KEYS,
   LYRICS_KEYS,
   NEXT_KEYS,
+  PLAY_KEYS,
   PREVIOUS_KEYS,
   MUTE_KEYS,
   REPEAT_KEYS,
@@ -130,7 +131,7 @@ export function Transport() {
             <SkipBackIcon className="fill-current" />
           </Button>
         </Hint>
-        <Hint label={isPlaying ? 'Pause' : 'Play'}>
+        <Hint label={isPlaying ? 'Pause' : 'Play'} keys={PLAY_KEYS}>
           <Button variant="light" size="icon" disabled={!hasTrack} onClick={player.toggle}>
             <PlayPauseIcon className="fill-current" />
           </Button>
@@ -160,14 +161,14 @@ export function Transport() {
 }
 
 /** Value shown while the user drags a slider, falling back to the backend value otherwise, and whether a drag is going on. */
-function useDraft(value: number) {
+export function useDraft(value: number) {
   const [draft, setDraft] = useState<number | null>(null)
   return [draft ?? value, setDraft, draft !== null] as const
 }
 
 /** Single-thumb slider reporting plain numbers; every slide that moved the value ends with `onSlideEnd`, even one that
  * came back to where it started, which Radix does not commit. */
-function ValueSlider({
+export function ValueSlider({
   value,
   onSlide,
   onSlideEnd,
@@ -264,7 +265,7 @@ function volumeIcon(volume: number) {
   return Volume2Icon
 }
 
-function VolumeControl() {
+export function VolumeControl() {
   const volume = usePlayer((state) => state.volume)
   // muted, the slider keeps the level dimmed, and unmuting goes back to it
   const muted = usePlayer((state) => state.muted)

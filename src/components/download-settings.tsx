@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderIcon, LoaderCircleIcon, RefreshCwIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
 import type { ToolVersions, ToolsView } from '@/bindings'
+import { Field } from '@/components/settings-field'
 import { InstallBar, installAmount, toolNames } from '@/components/tool-install'
 import { Button } from '@/components/ui/button'
 import { mutations, queries } from '@/lib/query'
@@ -109,17 +109,5 @@ function ToolCard({ tool, view }: { tool: (typeof tools)[number]; view: ToolsVie
       </div>
       {install !== null && <InstallBar install={install} />}
     </li>
-  )
-}
-
-function Field({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
-  return (
-    <section className="grid gap-3">
-      <div className="grid gap-1">
-        <h4 className="font-semibold">{title}</h4>
-        <p className="text-sm text-muted-foreground">{hint}</p>
-      </div>
-      {children}
-    </section>
   )
 }

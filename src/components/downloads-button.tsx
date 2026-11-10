@@ -12,10 +12,10 @@ import { mutations, queries } from '@/lib/query'
 import { cn } from '@/lib/utils'
 
 /** A stage a download can still leave on its own. */
-type ActiveStage = Exclude<DownloadStage, { kind: 'done' | 'failed' }>
+export type ActiveStage = Exclude<DownloadStage, { kind: 'done' | 'failed' }>
 
 /** Whether the download is still running. */
-function isActive(stage: DownloadStage): stage is ActiveStage {
+export function isActive(stage: DownloadStage): stage is ActiveStage {
   return stage.kind !== 'done' && stage.kind !== 'failed'
 }
 
@@ -96,9 +96,7 @@ export function DownloadsButton(props: Omit<ComponentProps<typeof Button>, 'chil
 
 function DownloadRow({ download }: { download: DownloadView }) {
   const dismiss = useMutation(mutations.dismissDownload())
-  const cancel = useMutation(mutations.cancelDownload())
   const { stage } = download
-  const active = isActive(stage)
   return (
     <li className="group flex items-center gap-3 rounded-md p-2 hover:bg-surface-hover">
       <SourceCover source={download.cover} className="size-10 rounded-sm" />
@@ -110,23 +108,42 @@ function DownloadRow({ download }: { download: DownloadView }) {
           </span>
         </Hint>
       </div>
-      {active && (
-        <Hint label={stageLabel(stage)}>
-          <div className="relative size-6 shrink-0">
-            <ProgressRing percent={stagePercent(stage)} thickness={3} />
-          </div>
-        </Hint>
+      {isActive(stage) ? (
+        <DownloadProgress download={download} stage={stage} />
+      ) : (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Remove ${download.title} from the list`}
+          className="opacity-0 group-hover:opacity-100"
+          onClick={() => dismiss.mutate(download.id)}
+        >
+          <XIcon />
+        </Button>
       )}
+    </li>
+  )
+}
+
+/** A running download's ring, filling as it goes and naming its stage on hover, and the cross that cancels it. */
+export function DownloadProgress({ download, stage }: { download: DownloadView; stage: ActiveStage }) {
+  const cancel = useMutation(mutations.cancelDownload())
+  return (
+    <>
+      <Hint label={stageLabel(stage)}>
+        <div className="relative size-6 shrink-0">
+          <ProgressRing percent={stagePercent(stage)} thickness={3} />
+        </div>
+      </Hint>
       <Button
         variant="ghost"
         size="icon-sm"
-        aria-label={active ? `Cancel downloading ${download.title}` : `Remove ${download.title} from the list`}
-        className={cn(!active && 'opacity-0 group-hover:opacity-100')}
-        onClick={() => (active ? cancel : dismiss).mutate(download.id)}
+        aria-label={`Cancel downloading ${download.title}`}
+        onClick={() => cancel.mutate(download.id)}
       >
         <XIcon />
       </Button>
-    </li>
+    </>
   )
 }
 

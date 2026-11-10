@@ -17,7 +17,7 @@ use crate::application::tags::{TagService, TrackEdit};
 use crate::application::views::*;
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
 use crate::domain::pins::PinTarget;
-use crate::domain::playback::{PlaybackContext, QueueKey, RepeatMode, Volume};
+use crate::domain::playback::{Crossfade, PlaybackContext, QueueKey, RepeatMode, Volume};
 use crate::domain::playlist::AddOutcome;
 
 /// Everything the commands reach, wired once at startup.
@@ -57,15 +57,20 @@ pub fn get_scenario(state: Ctx<'_>) -> Option<Scenario> {
 #[tauri::command]
 #[specta::specta]
 pub async fn list_folders(state: Ctx<'_>) -> AppResult<Vec<Folder>> {
-  let q = queries(&state);
-  blocking(move || q.folders()).await
+  let (q, library) = (queries(&state), state.library.clone());
+  blocking(move || Ok(library.mark_system(q.folders()?))).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn get_folder(state: Ctx<'_>, id: FolderId) -> AppResult<FolderDetail> {
-  let q = queries(&state);
-  blocking(move || q.folder(id)).await
+  let (q, library) = (queries(&state), state.library.clone());
+  blocking(move || {
+    let FolderDetail { folder, tracks } = q.folder(id)?;
+    let folder = library.mark_system(vec![folder]).remove(0);
+    Ok(FolderDetail { folder, tracks })
+  })
+  .await
 }
 
 /// Adds a folder to the library and scans it.
@@ -85,6 +90,21 @@ pub async fn add_folder(state: Ctx<'_>, path: String) -> AppResult<()> {
 pub async fn remove_folder(state: Ctx<'_>, path: String) -> AppResult<()> {
   let library = state.library.clone();
   blocking(move || library.remove_folder(&path)).await
+}
+
+/// Hides a folder's songs from the library and the queue, or shows them again.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_folder_hidden(state: Ctx<'_>, path: String, hidden: bool) -> AppResult<()> {
+  let (library, player) = (state.library.clone(), state.player.clone());
+  blocking(move || {
+    library.set_folder_hidden(&path, hidden)?;
+    if hidden {
+      player.send(PlayerCommand::Prune);
+    }
+    Ok(())
+  })
+  .await
 }
 
 #[tauri::command]
@@ -220,6 +240,22 @@ pub async fn import_found_cover(state: Ctx<'_>, url: String) -> AppResult<String
 pub async fn track_lyrics(state: Ctx<'_>, id: TrackId) -> AppResult<LyricsView> {
   let lyrics = state.lyrics.clone();
   blocking(move || lyrics.lyrics(id)).await
+}
+
+/// What LRCLIB has for a song whose file holds other lyrics, if anything.
+#[tauri::command]
+#[specta::specta]
+pub async fn lrclib_lyrics(state: Ctx<'_>, id: TrackId) -> AppResult<Option<LyricsView>> {
+  let lyrics = state.lyrics.clone();
+  blocking(move || lyrics.lrclib_lyrics(id)).await
+}
+
+/// Writes lyrics into the song's file over those it holds.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_lyrics(state: Ctx<'_>, id: TrackId, text: String, origin: LyricsOrigin) -> AppResult<()> {
+  let lyrics = state.lyrics.clone();
+  blocking(move || lyrics.save(id, &text, origin)).await
 }
 
 /// Tags of a song as the edit dialog shows them.
@@ -384,6 +420,28 @@ pub fn set_repeat(state: Ctx<'_>, repeat: RepeatMode) {
   state.player.send(PlayerCommand::SetRepeat(repeat));
 }
 
+/// Turns the short fades as songs start, stop, pause and resume on or off.
+#[tauri::command]
+#[specta::specta]
+pub fn set_fades(state: Ctx<'_>, fades: bool) {
+  state.player.send(PlayerCommand::SetFades(fades));
+}
+
+/// Sets how many seconds the end of a song and the start of the next play over each other; zero turns it off.
+#[tauri::command]
+#[specta::specta]
+pub fn set_crossfade(state: Ctx<'_>, seconds: u8) -> AppResult<()> {
+  state.player.send(PlayerCommand::SetCrossfade(Crossfade::new(seconds)?));
+  Ok(())
+}
+
+/// Lets Discord show the playing song on the user's profile, or stops it.
+#[tauri::command]
+#[specta::specta]
+pub fn set_discord_status(state: Ctx<'_>, shown: bool) {
+  state.player.send(PlayerCommand::SetDiscordStatus(shown));
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn get_download_settings(state: Ctx<'_>) -> DownloadSettingsView {
@@ -434,6 +492,22 @@ pub async fn update_download_tools(state: Ctx<'_>) -> AppResult<ToolsView> {
 pub async fn preview_download(state: Ctx<'_>, link: String) -> AppResult<DownloadPreview> {
   let downloads = state.downloads.clone();
   blocking(move || downloads.preview(&link)).await
+}
+
+/// Songs and videos on YouTube Music matching a typed name.
+#[tauri::command]
+#[specta::specta]
+pub async fn search_downloads(state: Ctx<'_>, query: String) -> AppResult<SongFinds> {
+  let downloads = state.downloads.clone();
+  blocking(move || downloads.search(&query)).await
+}
+
+/// A direct address of a found song's audio, to listen to it before downloading.
+#[tauri::command]
+#[specta::specta]
+pub async fn stream_download(state: Ctx<'_>, link: String) -> AppResult<String> {
+  let downloads = state.downloads.clone();
+  blocking(move || downloads.stream(&link)).await
 }
 
 #[tauri::command]

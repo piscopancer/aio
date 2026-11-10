@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { SearchIcon, XIcon } from 'lucide-react'
-import { type KeyboardEvent, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, type ReactNode, memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { Album, Artist, Playlist, Track } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { TrackMenu } from '@/components/track-menu'
@@ -140,68 +140,88 @@ export function Search() {
                 : 'Songs, artists, albums and playlists you open from search show up here'}
             </p>
           ) : (
-            rows.map((row, index) => {
-              const recent = row.section === 'recent'
-              const item = (
-                <div
-                  role="option"
-                  aria-selected={index === active}
-                  data-active={index === active}
-                  onMouseMove={() => setActive(index)}
-                  onClick={row.activate}
-                  className="group flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 data-[active=true]:bg-foreground/10"
-                >
-                  <div className="size-10 shrink-0 *:size-full">{row.cover}</div>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate">{row.title}</span>
-                    {row.subtitle !== '' && (
-                      <span className="truncate text-sm text-muted-foreground">{row.subtitle}</span>
-                    )}
-                  </div>
-                  {recent && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Remove ${row.title} from recent searches`}
-                      className="opacity-0 group-hover:opacity-100 group-data-[active=true]:opacity-100"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        forgetSearch(row.entry)
-                      }}
-                    >
-                      <XIcon />
-                    </Button>
-                  )}
-                </div>
-              )
-              return (
-                <div key={row.key}>
-                  {rows[index - 1]?.section !== row.section && (
-                    <div className={cn('flex items-center justify-between px-2 pb-1', index > 0 && 'pt-3')}>
-                      <h3 className="text-xs font-semibold text-muted-foreground uppercase">
-                        {sectionTitles[row.section]}
-                      </h3>
-                      {recent && (
-                        <button
-                          type="button"
-                          onClick={clearSearches}
-                          className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {row.wrap === undefined ? item : row.wrap(item)}
-                </div>
-              )
-            })
+            rows.map((row, index) => (
+              <SearchRow
+                key={row.key}
+                row={row}
+                index={index}
+                active={index === active}
+                opensSection={rows[index - 1]?.section !== row.section}
+                onHover={setActive}
+              />
+            ))
           )}
         </div>
       </PopoverContent>
     </Popover>
   )
 }
+
+/** One result with the section title above it when it opens a section; memoized, so moving the highlight or typing renders only the rows whose own result or highlight changed. */
+const SearchRow = memo(function SearchRow({
+  row,
+  index,
+  active,
+  opensSection,
+  onHover,
+}: {
+  row: Row
+  index: number
+  active: boolean
+  opensSection: boolean
+  onHover: (index: number) => void
+}) {
+  const recent = row.section === 'recent'
+  const item = (
+    <div
+      role="option"
+      aria-selected={active}
+      data-active={active}
+      onMouseMove={() => onHover(index)}
+      onClick={row.activate}
+      className="group flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 data-[active=true]:bg-foreground/10"
+    >
+      <div className="size-10 shrink-0 *:size-full">{row.cover}</div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate">{row.title}</span>
+        {row.subtitle !== '' && <span className="truncate text-sm text-muted-foreground">{row.subtitle}</span>}
+      </div>
+      {recent && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Remove ${row.title} from recent searches`}
+          className="opacity-0 group-hover:opacity-100 group-data-[active=true]:opacity-100"
+          onClick={(event) => {
+            event.stopPropagation()
+            forgetSearch(row.entry)
+          }}
+        >
+          <XIcon />
+        </Button>
+      )}
+    </div>
+  )
+  return (
+    <div>
+      {opensSection && (
+        <div className={cn('flex items-center justify-between px-2 pb-1', index > 0 && 'pt-3')}>
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase">{sectionTitles[row.section]}</h3>
+          {recent && (
+            <button
+              type="button"
+              onClick={clearSearches}
+              className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+      {row.wrap === undefined ? item : row.wrap(item)}
+    </div>
+  )
+})
 
 /** Rows of the popover: matches of the query in section order, or the recent picks that still exist when the query is empty; choosing a row remembers it, then runs `done`. */
 function useRows(query: string, done: () => void) {
@@ -212,103 +232,108 @@ function useRows(query: string, done: () => void) {
   const { data: artists = [] } = useQuery(queries.artists())
   const { data: playlists = [] } = useQuery(queries.playlists())
 
-  const choose = (entry: RecentEntry, action: () => unknown) => () => {
-    rememberSearch(entry)
-    void action()
-    done()
-  }
-  const builders = {
-    songs: (track: Track, section: Section): Row => {
-      const entry = { kind: 'songs', id: track.id } as const
-      return {
-        key: `${section}:song:${track.id}`,
-        section,
-        entry,
-        cover: <Cover src={track.cover} kind="track" className="rounded-sm" />,
-        title: track.title,
-        subtitle: credit(track.artists),
-        activate: choose(entry, () => player.play(songsContext, track.id)),
-        wrap: (row) => (
-          <TrackMenu track={track} context={songsContext}>
-            {row}
-          </TrackMenu>
-        ),
-      }
-    },
-    artists: (artist: Artist, section: Section): Row => {
-      const entry = { kind: 'artists', id: artist.id } as const
-      return {
-        key: `${section}:artist:${artist.id}`,
-        section,
-        entry,
-        cover: <Cover src={artist.cover} kind="artist" />,
-        title: artist.name,
-        subtitle: plural(artist.trackCount, 'song'),
-        activate: choose(entry, () => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })),
-      }
-    },
-    albums: (album: Album, section: Section): Row => {
-      const entry = { kind: 'albums', id: album.id } as const
-      return {
-        key: `${section}:album:${album.id}`,
-        section,
-        entry,
-        cover: <Cover src={album.cover} kind="album" className="rounded-sm" />,
-        title: album.title,
-        subtitle: [album.year, credit(album.artists)].filter((part) => part !== null && part !== '').join(' • '),
-        activate: choose(entry, () => navigate({ to: '/albums/$albumId', params: { albumId: album.id } })),
-      }
-    },
-    playlists: (playlist: Playlist, section: Section): Row => {
-      const entry = { kind: 'playlists', id: playlist.id } as const
-      return {
-        key: `${section}:playlist:${playlist.id}`,
-        section,
-        entry,
-        cover: <Cover src={playlist.cover} kind="playlist" className="rounded-sm" />,
-        title: playlist.name,
-        subtitle: plural(playlist.trackCount, 'song'),
-        activate: choose(entry, () => navigate({ to: '/playlists/$playlistId', params: { playlistId: playlist.id } })),
-      }
-    },
-  }
+  // the compiler leaves these rows unmemoized, and fresh rows on every keystroke or highlight move would render every `SearchRow` again
+  return useMemo(() => {
+    const choose = (entry: RecentEntry, action: () => unknown) => () => {
+      rememberSearch(entry)
+      void action()
+      done()
+    }
+    const builders = {
+      songs: (track: Track, section: Section): Row => {
+        const entry = { kind: 'songs', id: track.id } as const
+        return {
+          key: `${section}:song:${track.id}`,
+          section,
+          entry,
+          cover: <Cover src={track.cover} kind="track" className="rounded-sm" />,
+          title: track.title,
+          subtitle: credit(track.artists),
+          activate: choose(entry, () => player.play(songsContext, track.id)),
+          wrap: (row) => (
+            <TrackMenu track={track} context={songsContext}>
+              {row}
+            </TrackMenu>
+          ),
+        }
+      },
+      artists: (artist: Artist, section: Section): Row => {
+        const entry = { kind: 'artists', id: artist.id } as const
+        return {
+          key: `${section}:artist:${artist.id}`,
+          section,
+          entry,
+          cover: <Cover src={artist.cover} kind="artist" />,
+          title: artist.name,
+          subtitle: plural(artist.trackCount, 'song'),
+          activate: choose(entry, () => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })),
+        }
+      },
+      albums: (album: Album, section: Section): Row => {
+        const entry = { kind: 'albums', id: album.id } as const
+        return {
+          key: `${section}:album:${album.id}`,
+          section,
+          entry,
+          cover: <Cover src={album.cover} kind="album" className="rounded-sm" />,
+          title: album.title,
+          subtitle: [album.year, credit(album.artists)].filter((part) => part !== null && part !== '').join(' • '),
+          activate: choose(entry, () => navigate({ to: '/albums/$albumId', params: { albumId: album.id } })),
+        }
+      },
+      playlists: (playlist: Playlist, section: Section): Row => {
+        const entry = { kind: 'playlists', id: playlist.id } as const
+        return {
+          key: `${section}:playlist:${playlist.id}`,
+          section,
+          entry,
+          cover: <Cover src={playlist.cover} kind="playlist" className="rounded-sm" />,
+          title: playlist.name,
+          subtitle: plural(playlist.trackCount, 'song'),
+          activate: choose(entry, () =>
+            navigate({ to: '/playlists/$playlistId', params: { playlistId: playlist.id } }),
+          ),
+        }
+      },
+    }
 
-  const results = searchLibrary(query, { tracks, albums, artists, playlists })
-  if (results !== null) {
-    return [
-      ...results.songs.map((track) => builders.songs(track, 'songs')),
-      ...results.artists.map((artist) => builders.artists(artist, 'artists')),
-      ...results.albums.map((album) => builders.albums(album, 'albums')),
-      ...results.playlists.map((playlist) => builders.playlists(playlist, 'playlists')),
-    ]
-  }
+    const results = searchLibrary(query, { tracks, albums, artists, playlists })
+    if (results !== null) {
+      return [
+        ...results.songs.map((track) => builders.songs(track, 'songs')),
+        ...results.artists.map((artist) => builders.artists(artist, 'artists')),
+        ...results.albums.map((album) => builders.albums(album, 'albums')),
+        ...results.playlists.map((playlist) => builders.playlists(playlist, 'playlists')),
+      ]
+    }
 
-  // a picked item may have left the library since; it is skipped until it is picked again
-  return recent.flatMap((entry): Row[] => {
-    const row = (() => {
-      switch (entry.kind) {
-        case 'songs': {
-          const track = tracks.find((item) => item.id === entry.id)
-          return track && builders.songs(track, 'recent')
+    // a picked item may have left the library since; it is skipped until it is picked again
+    return recent.flatMap((entry): Row[] => {
+      const row = (() => {
+        switch (entry.kind) {
+          case 'songs': {
+            const track = tracks.find((item) => item.id === entry.id)
+            return track && builders.songs(track, 'recent')
+          }
+          case 'artists': {
+            const artist = artists.find((item) => item.id === entry.id)
+            return artist && builders.artists(artist, 'recent')
+          }
+          case 'albums': {
+            const album = albums.find((item) => item.id === entry.id)
+            return album && builders.albums(album, 'recent')
+          }
+          case 'playlists': {
+            const playlist = playlists.find((item) => item.id === entry.id)
+            return playlist && builders.playlists(playlist, 'recent')
+          }
+          default:
+            return entry satisfies never
         }
-        case 'artists': {
-          const artist = artists.find((item) => item.id === entry.id)
-          return artist && builders.artists(artist, 'recent')
-        }
-        case 'albums': {
-          const album = albums.find((item) => item.id === entry.id)
-          return album && builders.albums(album, 'recent')
-        }
-        case 'playlists': {
-          const playlist = playlists.find((item) => item.id === entry.id)
-          return playlist && builders.playlists(playlist, 'recent')
-        }
-        default:
-          return entry satisfies never
-      }
-    })()
-    if (row === undefined) return []
-    const subtitle = [kindLabels[entry.kind], row.subtitle].filter((part) => part !== '').join(' • ')
-    return [{ ...row, subtitle }]
-  })
+      })()
+      if (row === undefined) return []
+      const subtitle = [kindLabels[entry.kind], row.subtitle].filter((part) => part !== '').join(' • ')
+      return [{ ...row, subtitle }]
+    })
+  }, [query, recent, tracks, albums, artists, playlists, navigate, done])
 }

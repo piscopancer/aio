@@ -53,12 +53,17 @@ impl YtDlpMedia {
     command
   }
 
-  fn json(&self, args: &[&str]) -> AppResult<Value> {
+  /// What yt-dlp prints for `args`, or the error it ends with.
+  fn output(&self, args: &[&str]) -> AppResult<Vec<u8>> {
     let output = self.yt_dlp().args(args).output().map_err(fetch_error)?;
     if !output.status.success() {
       return Err(AppError::Fetch(last_error(&output.stderr)));
     }
-    serde_json::from_slice(&output.stdout).map_err(fetch_error)
+    Ok(output.stdout)
+  }
+
+  fn json(&self, args: &[&str]) -> AppResult<Value> {
+    serde_json::from_slice(&self.output(args)?).map_err(fetch_error)
   }
 
   fn get_bytes(&self, url: &str) -> AppResult<Vec<u8>> {
@@ -160,6 +165,15 @@ impl MediaSource for YtDlpMedia {
         })
         .collect(),
     )
+  }
+
+  fn audio_stream(&self, url: &str) -> AppResult<String> {
+    let output = self.output(&["--format", "bestaudio[ext=m4a]/bestaudio", "--get-url", url])?;
+    String::from_utf8_lossy(&output)
+      .lines()
+      .next()
+      .map(str::to_owned)
+      .ok_or_else(|| fetch_error("yt-dlp gave no audio address"))
   }
 
   /// Reads the track from Spotify's embed page, which carries its data as JSON and needs no account.

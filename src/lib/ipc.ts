@@ -90,6 +90,8 @@ function libraryMessage(reason: LibraryError) {
       return `This folder overlaps ${reason.existing}, which is already in the library`
     case 'notInLibrary':
       return 'This folder is not in the library'
+    case 'systemFolder':
+      return 'The system Music folder stays in the library; it can be hidden instead'
     default:
       return reason satisfies never
   }
@@ -123,6 +125,8 @@ function playbackMessage(reason: PlaybackError) {
       return 'Volume must be between 0 and 100'
     case 'nothingToPlay':
       return 'There is nothing to play'
+    case 'crossfadeOutOfRange':
+      return 'This crossfade length is out of range'
     case 'entryNotInQueue':
       return 'This song is no longer in the queue'
     default:

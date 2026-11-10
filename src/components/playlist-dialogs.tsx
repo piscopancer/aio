@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
 import { PLAYLIST_NAME_MAX_CHARS, type Playlist } from '@/bindings'
 import { Cover } from '@/components/cover'
@@ -162,8 +162,19 @@ function DetailsForm({
 /** Leaves the playlist page when the deleted playlist is the one on screen. */
 function DeleteConfirmation({ playlist, onDone }: { playlist: Playlist; onDone: () => void }) {
   const navigate = useNavigate()
-  const matchRoute = useMatchRoute()
-  const remove = useMutation(mutations.deletePlaylist())
+  // the router itself, read when the deletion lands, rather than a match hook, whose subscription would render every playlist's hidden dialog on every navigation
+  const router = useRouter()
+  const remove = useMutation({
+    ...mutations.deletePlaylist(),
+    // on the mutation rather than on `mutate`, so it still runs once the deleted playlist has left the sidebar along with this dialog, and before the playlists are fetched again, while the page would still ask for the one gone
+    onSuccess: async (_, id) => {
+      // the matches hold the parsed id, where `matchRoute` would compare the number with the raw text of the address
+      const onPage = router.state.matches.some(
+        (match) => match.routeId === '/playlists/$playlistId' && match.params.playlistId === id,
+      )
+      if (onPage) await navigate({ to: '/' })
+    },
+  })
   return (
     <DialogContent>
       <DialogHeader>
@@ -182,15 +193,7 @@ function DeleteConfirmation({ playlist, onDone }: { playlist: Playlist; onDone: 
         <Button
           variant="destructive"
           disabled={remove.isPending}
-          onClick={() =>
-            remove.mutate(playlist.id, {
-              onSuccess: async () => {
-                onDone()
-                if (matchRoute({ to: '/playlists/$playlistId', params: { playlistId: playlist.id } }) !== false)
-                  await navigate({ to: '/' })
-              },
-            })
-          }
+          onClick={() => remove.mutate(playlist.id, { onSuccess: onDone })}
         >
           Delete
         </Button>

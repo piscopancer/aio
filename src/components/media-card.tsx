@@ -14,6 +14,7 @@ export function MediaCard({
   context,
   link,
   pinned = false,
+  tightSubtitle = false,
   className,
   ...props
 }: Omit<ComponentProps<'div'>, 'title'> & {
@@ -23,6 +24,8 @@ export function MediaCard({
   context: PlaybackContext
   link: ReactNode
   pinned?: boolean
+  /** Pulls the subtitle up against the title, for a short line of counts that reads as one caption with it. */
+  tightSubtitle?: boolean
 }) {
   const playingHere = useIsPlayingFrom(context)
   const isPlaying = usePlayer((state) => playingHere && state.isPlaying)
@@ -47,7 +50,7 @@ export function MediaCard({
         />
       </div>
       <Marquee className={cn('font-semibold', playingHere && 'text-primary')}>{title}</Marquee>
-      <Marquee className="-mt-1 text-sm text-muted-foreground">{subtitle}</Marquee>
+      <Marquee className={cn('text-sm text-muted-foreground', tightSubtitle ? '-mt-1.5' : '-mt-1')}>{subtitle}</Marquee>
       {link}
     </div>
   )

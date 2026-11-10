@@ -78,7 +78,7 @@ const META_STATS = {
     hint: (count: number) => plural(count, 'song'),
   },
   length: { icon: ClockIcon, value: formatLength, hint: () => 'Total length' },
-  year: { icon: CalendarDaysIcon, value: String, hint: (year: number) => `Released in ${year}` },
+  year: { icon: CalendarDaysIcon, value: String, hint: () => 'Release year' },
 } as const satisfies Record<string, { icon: LucideIcon; value: (n: number) => string; hint: (n: number) => string }>
 
 /** Dark translucent capsule holding the figures of a meta line, readable over any cover colour. */

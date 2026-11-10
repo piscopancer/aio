@@ -1,7 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import {
   Disc3Icon,
+  FolderOpenIcon,
   ListEndIcon,
   ListPlusIcon,
   MicVocalIcon,
@@ -13,6 +15,7 @@ import {
 import type { ReactNode } from 'react'
 import type { PlaybackContext, Track } from '@/bindings'
 import { Cover } from '@/components/cover'
+import { Shortcut } from '@/components/ui/shortcut'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -23,9 +26,9 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
-import { player } from '@/lib/player'
+import { currentItem, player, usePlayer } from '@/lib/player'
 import { useCreatePlaylist, useOrderedPlaylists } from '@/lib/playlists'
-import { editTrack } from '@/lib/track-editor'
+import { EDIT_PLAYING_KEYS, editTrack } from '@/lib/track-editor'
 import { mutations, queries } from '@/lib/query'
 
 type TrackMenuProps = { track: Track; context: PlaybackContext }
@@ -50,12 +53,19 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
   const soleArtist = track.artists.length === 1 ? track.artists[0] : undefined
   const playlists = useOrderedPlaylists()
   const { data: holding = [] } = useQuery(queries.playlistsWithTrack(track.id))
+  // the pictures of the artists to pick from, which only the submenu of several shows
+  const { data: artistCovers } = useQuery({
+    ...queries.artists(),
+    enabled: track.artists.length > 1,
+    select: (artists) => new Map(artists.map(({ id, cover }) => [id, cover])),
+  })
   const addToPlaylist = useMutation(mutations.addToPlaylist())
   const removeFromPlaylist = useMutation(mutations.removeFromPlaylist())
   const createPlaylist = useCreatePlaylist()
   const trackIds = [track.id]
 
-  if (track.missing)
+  // a song that cannot be played can only leave the playlist that still lists it
+  if (track.presence !== 'present')
     return (
       context.kind === 'playlist' && (
         <ContextMenuItem onSelect={() => removeFromPlaylist.mutate({ id: context.id, trackIds })}>
@@ -114,44 +124,64 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
           Remove from this playlist
         </ContextMenuItem>
       )}
-      <ContextMenuSeparator />
-      {soleArtist !== undefined ? (
-        <ContextMenuItem onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: soleArtist.id } })}>
-          <MicVocalIcon />
-          Go to artist
-        </ContextMenuItem>
-      ) : (
-        // a song credited to nobody has no artist to go to
-        track.artists.length > 1 && (
-          <ContextMenuSub>
-            <ContextMenuSubTrigger>
+      {/* a song credited to nobody and on no album has nowhere to go, so the group and its separator are left out */}
+      {(track.artists.length > 0 || albumId !== null) && (
+        <>
+          <ContextMenuSeparator />
+          {soleArtist !== undefined ? (
+            <ContextMenuItem
+              onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: soleArtist.id } })}
+            >
               <MicVocalIcon />
               Go to artist
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              {track.artists.map((artist) => (
-                <ContextMenuItem
-                  key={artist.id}
-                  onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })}
-                >
-                  {artist.name}
-                </ContextMenuItem>
-              ))}
-            </ContextMenuSubContent>
-          </ContextMenuSub>
-        )
-      )}
-      {albumId !== null && (
-        <ContextMenuItem onSelect={() => navigate({ to: '/albums/$albumId', params: { albumId } })}>
-          <Disc3Icon />
-          Go to album
-        </ContextMenuItem>
+            </ContextMenuItem>
+          ) : (
+            track.artists.length > 1 && (
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>
+                  <MicVocalIcon />
+                  Go to artist
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent>
+                  {track.artists.map((artist) => (
+                    <ContextMenuItem
+                      key={artist.id}
+                      onSelect={() => navigate({ to: '/artists/$artistId', params: { artistId: artist.id } })}
+                    >
+                      <Cover src={artistCovers?.get(artist.id) ?? null} kind="artist" className="-my-1 size-7" />
+                      <span className="max-w-64 truncate">{artist.name}</span>
+                    </ContextMenuItem>
+                  ))}
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            )
+          )}
+          {albumId !== null && (
+            <ContextMenuItem onSelect={() => navigate({ to: '/albums/$albumId', params: { albumId } })}>
+              <Disc3Icon />
+              Go to album
+            </ContextMenuItem>
+          )}
+        </>
       )}
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => editTrack(track)}>
-        <PencilIcon />
-        Edit details
+      <ContextMenuItem onSelect={() => void revealItemInDir(track.path)}>
+        <FolderOpenIcon />
+        Show in Explorer
       </ContextMenuItem>
+      <EditDetailsItem track={track} />
     </>
+  )
+}
+
+/** Opens the song's details dialog, naming the shortcut that does the same when the song is the one playing. */
+function EditDetailsItem({ track }: { track: Track }) {
+  const playing = usePlayer((state) => currentItem(state)?.track.id === track.id)
+  return (
+    <ContextMenuItem onSelect={() => editTrack(track)}>
+      <PencilIcon />
+      Edit details
+      {playing && <Shortcut keys={EDIT_PLAYING_KEYS} className="ml-auto" />}
+    </ContextMenuItem>
   )
 }

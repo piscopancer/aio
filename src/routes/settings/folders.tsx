@@ -1,9 +1,11 @@
 import { useMutation, useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderIcon, FolderPlusIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
+import { EyeIcon, EyeOffIcon, FolderPlusIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
 import { useState } from 'react'
 import type { Folder } from '@/bindings'
+import { Count, Counts } from '@/components/count'
+import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +21,7 @@ import {
 import { useScan } from '@/lib/backend'
 import { plural } from '@/lib/format'
 import { mutations, queries } from '@/lib/query'
+import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/settings/folders')({
   loader: ({ context }) => context.queryClient.ensureQueryData(queries.folders()),
@@ -38,7 +41,8 @@ function Folders() {
         <h1 className="text-3xl font-bold">Folders</h1>
         <p className="text-muted-foreground">
           Aio reads every audio file inside these folders and their subfolders. A folder cannot sit inside another one
-          that is already here.
+          that is already here. Your system Music folder always stays in the list. A hidden folder's songs leave the
+          library and the queue, while playlists keep showing them dimmed until the folder is shown again.
         </p>
       </header>
       <div className="flex gap-2">
@@ -60,29 +64,31 @@ function Folders() {
       <ScanStatus />
       <ul className="flex flex-col gap-1">
         {folders.map((folder) => (
-          <li key={folder.id} className="group flex items-center gap-4 rounded-md p-3 hover:bg-surface-hover">
+          <li key={folder.id} className="flex items-center gap-4 rounded-md p-2 hover:bg-surface-hover">
             <Link
               to="/folders/$folderId"
               params={{ folderId: folder.id }}
-              className="flex min-w-0 flex-1 items-center gap-4"
+              className={cn('flex min-w-0 flex-1 items-center gap-4', folder.hidden && 'opacity-50')}
             >
-              <FolderIcon className="size-6 shrink-0 text-muted-foreground" />
+              <Cover src={null} kind="folder" className="size-12" />
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate">{folder.path}</span>
-                <span className="text-sm text-muted-foreground">{plural(folder.trackCount, 'song')}</span>
+                <Counts>
+                  <Count kind="songs" value={folder.trackCount} />
+                </Counts>
               </div>
             </Link>
-            <Hint label="Remove from library">
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={busy}
-                className="opacity-0 group-hover:opacity-100"
-                onClick={() => setRemoving(folder)}
-              >
-                <Trash2Icon />
-              </Button>
-            </Hint>
+            <VisibilityButton folder={folder} disabled={busy} />
+            {/* the system folder can only be hidden, so an empty slot keeps its eye in line with the others */}
+            {folder.system ? (
+              <span className="size-8 shrink-0" />
+            ) : (
+              <Hint label="Remove from library">
+                <Button variant="ghost" size="icon" disabled={busy} onClick={() => setRemoving(folder)}>
+                  <Trash2Icon />
+                </Button>
+              </Hint>
+            )}
           </li>
         ))}
       </ul>
@@ -90,6 +96,23 @@ function Folders() {
         {removing !== null && <RemoveConfirmation folder={removing} onDone={() => setRemoving(null)} />}
       </Dialog>
     </div>
+  )
+}
+
+/** The eye that hides a folder's songs from the library, or shows them again. */
+function VisibilityButton({ folder, disabled }: { folder: Folder; disabled: boolean }) {
+  const setHidden = useMutation(mutations.setFolderHidden())
+  return (
+    <Hint label={folder.hidden ? 'Show its songs' : 'Hide its songs'}>
+      <Button
+        variant="ghost"
+        size="icon"
+        disabled={disabled || setHidden.isPending}
+        onClick={() => setHidden.mutate({ path: folder.path, hidden: !folder.hidden })}
+      >
+        {folder.hidden ? <EyeOffIcon /> : <EyeIcon />}
+      </Button>
+    </Hint>
   )
 }
 

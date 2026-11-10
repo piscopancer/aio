@@ -24,6 +24,7 @@ use crate::application::playlists::PlaylistService;
 use crate::application::ports::SettingsStore;
 use crate::application::tag_search::TagSearchService;
 use crate::application::tags::TagService;
+use crate::domain::library::FolderPath;
 use crate::domain::playback::Volume;
 use crate::domain::playlist::PlaylistName;
 use crate::domain::tags::SongTags;
@@ -55,6 +56,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::get_folder,
       commands::add_folder,
       commands::remove_folder,
+      commands::set_folder_hidden,
       commands::scan_library,
       commands::list_tracks,
       commands::list_albums,
@@ -94,6 +96,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::set_muted,
       commands::set_shuffle,
       commands::set_repeat,
+      commands::set_fades,
+      commands::set_discord_status,
+      commands::set_crossfade,
       commands::get_download_settings,
       commands::set_download_folder,
       commands::check_download_folder,
@@ -101,10 +106,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::prepare_downloads,
       commands::update_download_tools,
       commands::preview_download,
+      commands::search_downloads,
+      commands::stream_download,
       commands::start_download,
       commands::list_downloads,
       commands::dismiss_download,
       commands::track_lyrics,
+      commands::lrclib_lyrics,
+      commands::save_lyrics,
       commands::cancel_download,
     ])
     .events(collect_events![
@@ -145,8 +154,24 @@ fn two_space_indent(source: &str) -> String {
     .collect()
 }
 
+/// Port the dev build's WebView2 listens on for the Chrome DevTools Protocol, so the running app can be inspected and driven by scripts.
+#[cfg(debug_assertions)]
+const DEVTOOLS_PORT: u16 = 9222;
+
+/// Opens the dev build's webview to the DevTools Protocol, unless the WebView2 arguments were set by hand.
+#[cfg(debug_assertions)]
+fn open_devtools_port() {
+  const ARGUMENTS: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+  if std::env::var_os(ARGUMENTS).is_none() {
+    // SAFETY: called first thing in `run`, before any thread that could read the environment is started
+    unsafe { std::env::set_var(ARGUMENTS, format!("--remote-debugging-port={DEVTOOLS_PORT}")) };
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  #[cfg(debug_assertions)]
+  open_devtools_port();
   let scenario = Cli::parse().scenario();
   let builder = specta_builder();
 
@@ -167,7 +192,7 @@ pub fn run() {
       if let Some(window) = app.get_webview_window("main") {
         window.create_overlay_titlebar()?;
         #[cfg(windows)]
-        disable_browser_keys(&window);
+        disable_browser_features(&window);
       }
       let data_dir = app.path().app_data_dir()?;
       fs::create_dir_all(&data_dir)?;
@@ -178,11 +203,18 @@ pub fn run() {
       let notifier = Arc::new(TauriNotifier(app.handle().clone()));
       let covers_dir = data_dir.join("covers");
       let files = Arc::new(LocalAudioFiles::new(covers_dir.clone()));
+      // a scenario plays out on its own seeded library, without the user's music
+      let system_folder = scenario
+        .is_none()
+        .then(|| app.path().audio_dir().ok())
+        .flatten()
+        .and_then(|dir| FolderPath::new(dir).ok());
       let library = Arc::new(LibraryService::new(
         store.clone(),
         store.clone(),
         files.clone(),
         notifier.clone(),
+        system_folder,
       ));
       let playlists = Arc::new(PlaylistService::new(store.clone()));
       let pins = Arc::new(PinService::new(store.clone()));
@@ -192,6 +224,7 @@ pub fn run() {
       let music_dir = app.path().audio_dir().unwrap_or_else(|_| data_dir.join("downloads"));
       let downloads = Arc::new(DownloadService::new(
         Arc::new(YtDlpMedia::new(tools.clone())),
+        Arc::new(YoutubeMusic::new()),
         tools,
         store.clone(),
         library.clone(),
@@ -239,11 +272,16 @@ pub fn run() {
         files,
         store.clone(),
         store.clone(),
+        store.clone(),
         player.clone(),
         notifier.clone(),
       ));
 
       if scenario.is_none() {
+        // before the first listing, so the system music folder is there from the first launch on
+        if let Err(error) = library.keep_system_folder() {
+          eprintln!("keeping the system music folder failed: {error}");
+        }
         // picks up files changed while the app was closed, and re-reads those a migration marked as changed
         let startup = library.clone();
         std::thread::spawn(move || {
@@ -275,11 +313,12 @@ pub fn run() {
     .expect("error while running tauri application");
 }
 
-/// Turns off the webview's browser shortcuts, such as Ctrl+F opening a find bar over the app's own search, Ctrl+P
-/// printing and F5 reloading; the developer tools stay reachable through Shift and right-click in dev builds.
+/// Turns off what the webview does as a browser: its shortcuts, such as Ctrl+F opening a find bar over the app's own
+/// search, Ctrl+P printing and F5 reloading, and its autofill, which offers values once typed into fields over the
+/// app's own forms; the developer tools stay reachable through Shift and right-click in dev builds.
 #[cfg(windows)]
-fn disable_browser_keys(window: &tauri::WebviewWindow) {
-  use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+fn disable_browser_features(window: &tauri::WebviewWindow) {
+  use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
   use windows_core::Interface;
 
   let result = window.with_webview(|webview| {
@@ -289,15 +328,19 @@ fn disable_browser_keys(window: &tauri::WebviewWindow) {
         .controller()
         .CoreWebView2()
         .and_then(|core| core.Settings())
-        .and_then(|settings| settings.cast::<ICoreWebView2Settings3>())
-        .and_then(|settings| settings.SetAreBrowserAcceleratorKeysEnabled(false))
+        .and_then(|settings| settings.cast::<ICoreWebView2Settings4>())
+        .and_then(|settings| {
+          settings.SetAreBrowserAcceleratorKeysEnabled(false)?;
+          settings.SetIsGeneralAutofillEnabled(false)?;
+          settings.SetIsPasswordAutosaveEnabled(false)
+        })
     };
     if let Err(error) = disabled {
-      eprintln!("browser shortcuts stay on: {error}");
+      eprintln!("browser features stay on: {error}");
     }
   });
   if let Err(error) = result {
-    eprintln!("browser shortcuts stay on: {error}");
+    eprintln!("browser features stay on: {error}");
   }
 }
 

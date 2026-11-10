@@ -10,6 +10,9 @@ void main() { gl_Position = vec4(a_position, 0.0, 1.0); }`
 /** Seconds the motion takes to come to a halt on pause, or back to its pace on play. */
 const EASE_SECONDS = 1.5
 
+/** Milliseconds between pictures of a moving scene: 30 a second is smooth enough for slow motion, and every picture left out is a frame the webview composes without a fresh canvas, which keeps a keystroke from waiting behind the shaders. */
+const FRAME_MS = 1000 / 30
+
 /** Moves `value` toward `target` by the share of the way an exponential ease of `seconds` covers in `dt` seconds. */
 export const approach = (value: number, target: number, dt: number, seconds: number) =>
   value + (target - value) * (1 - Math.exp((-dt * 3) / seconds))
@@ -83,10 +86,12 @@ export function runScene<U extends string>(
   let last = performance.now()
   let request = 0
   const draw = (now: number) => {
+    request = requestAnimationFrame(draw)
+    // a hair short of the interval, so the jitter of the display's frames never pushes a picture to the frame after
+    if (now - last < FRAME_MS - 2) return
     const dt = Math.min((now - last) / 1000, 0.1)
     last = now
     if (frame(dt)) render()
-    request = requestAnimationFrame(draw)
   }
   // the first picture is drawn at once rather than on the next animation frame, so a layout effect gets it painted with the page
   frame(0)

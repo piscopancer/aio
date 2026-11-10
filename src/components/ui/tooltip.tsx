@@ -27,6 +27,7 @@ function TooltipTrigger(props: ComponentProps<typeof TooltipPrimitive.Trigger>) 
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
 }
 
+/** A label only, so the pointer passes through it to whatever lies beneath, also while it fades out; forced, as inside an open dialog Radix sets it back to auto inline. */
 function TooltipContent({ className, sideOffset = 6, ...props }: ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
     <TooltipPrimitive.Portal>
@@ -34,7 +35,7 @@ function TooltipContent({ className, sideOffset = 6, ...props }: ComponentProps<
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          'z-50 animate-in rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-lg fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
+          'pointer-events-none! z-50 animate-in rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-lg fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
           className,
         )}
         {...props}

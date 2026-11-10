@@ -6,8 +6,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use diesel::connection::SimpleConnection;
+use diesel::dsl::auto_type;
 use diesel::dsl::{count, sum};
-use diesel::helper_types::{IsNotNull, IsNull, LeftJoin, LeftJoinOn};
+use diesel::helper_types::{IsNull, LeftJoin, LeftJoinOn};
 use diesel::prelude::*;
 use diesel::result::{ConnectionError, Error as DieselError};
 use diesel::sqlite::Sqlite;
@@ -22,9 +23,9 @@ use crate::application::error::{AppError, AppResult, Missing};
 use crate::application::ports::*;
 use crate::application::views::*;
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
-use crate::domain::library::{FolderPath, LibraryFolders};
+use crate::domain::library::{FolderPath, LibraryError, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{QueueSnapshot, RepeatMode, Volume};
+use crate::domain::playback::{Crossfade, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 use crate::domain::tags::ReleaseType;
 
@@ -128,11 +129,29 @@ struct TrackRow {
   duration_ms: i32,
   #[diesel(select_expression = tracks::folder_id.is_null(), select_expression_type = IsNull<tracks::folder_id>)]
   missing: bool,
+  /// Null for a song of no folder, as SQL compares a missing folder with the hidden ones.
+  #[diesel(select_expression = in_hidden_folder(), select_expression_type = in_hidden_folder)]
+  hidden: Option<bool>,
 }
 
-/// Tracks whose file is in a library folder; the others are kept only for the playlists that hold them.
-fn present() -> IsNotNull<tracks::folder_id> {
-  tracks::folder_id.is_not_null()
+/// Ids of the hidden folders, comparable with a track's folder.
+#[auto_type]
+fn hidden_folders() -> _ {
+  folders::table.filter(folders::hidden).select(folders::id.nullable())
+}
+
+/// Tracks of a hidden folder.
+#[auto_type]
+fn in_hidden_folder() -> _ {
+  let hidden: hidden_folders = hidden_folders();
+  tracks::folder_id.eq_any(hidden)
+}
+
+/// Tracks whose file is in a shown library folder; the others are kept only for the playlists that hold them.
+#[auto_type]
+fn present() -> _ {
+  let hidden: hidden_folders = hidden_folders();
+  tracks::folder_id.is_not_null().and(tracks::folder_id.ne_all(hidden))
 }
 
 impl TrackRow {
@@ -153,7 +172,13 @@ impl TrackRow {
       track_no: stored_opt(self.track_no)?,
       disc_no: stored_opt(self.disc_no)?,
       duration_ms: stored(self.duration_ms)?,
-      missing: self.missing,
+      presence: if self.missing {
+        Presence::Missing
+      } else if self.hidden == Some(true) {
+        Presence::Hidden
+      } else {
+        Presence::Present
+      },
     })
   }
 }
@@ -310,6 +335,9 @@ struct SettingsRow {
   volume: i32,
   shuffle: bool,
   repeat: String,
+  fades: bool,
+  crossfade_seconds: i32,
+  discord_status: bool,
 }
 
 /// The settings table holds exactly one row, with this id.
@@ -367,15 +395,15 @@ impl SqliteStore {
   fn folder_views(&self, only: Option<i32>) -> AppResult<Vec<Folder>> {
     let conn = &mut *self.conn();
     let mut query = folders::table
-      .select((folders::id, folders::path))
+      .select((folders::id, folders::path, folders::hidden))
       .order(folders::path)
       .into_boxed();
     if let Some(id) = only {
       query = query.filter(folders::id.eq(id));
     }
-    let rows: Vec<(i32, String)> = query.load(conn)?;
+    let rows: Vec<(i32, String, bool)> = query.load(conn)?;
     let counts: HashMap<i32, i64> = tracks::table
-      .filter(present())
+      .filter(tracks::folder_id.is_not_null())
       .group_by(tracks::folder_id)
       .select((tracks::folder_id.assume_not_null(), count(tracks::id)))
       .load(conn)?
@@ -383,11 +411,14 @@ impl SqliteStore {
       .collect();
     rows
       .into_iter()
-      .map(|(id, path)| {
+      .map(|(id, path, hidden)| {
         Ok(Folder {
           id: FolderId(stored(id)?),
           path,
           track_count: stored(counts.get(&id).copied().unwrap_or_default())?,
+          hidden,
+          // only the library service knows which folder is the system one
+          system: false,
         })
       })
       .collect()
@@ -810,14 +841,44 @@ impl FolderRepository for SqliteStore {
   fn save_folders(&self, library: &LibraryFolders) -> AppResult<()> {
     let kept: Vec<String> = library.folders().iter().map(FolderPath::display).collect();
     self.write(|conn| {
-      diesel::delete(folders::table.filter(folders::path.ne_all(&kept))).execute(conn)?;
       for path in &kept {
         diesel::insert_or_ignore_into(folders::table)
           .values(folders::path.eq(path))
           .execute(conn)?;
       }
+      let leaving: Vec<(i32, String)> = folders::table
+        .filter(folders::path.ne_all(&kept))
+        .select((folders::id, folders::path))
+        .load(conn)?;
+      // a folder merged into one holding it hands its songs over, so they keep their ids, playlists and lyrics
+      for (id, path) in leaving {
+        let Some(holder) = FolderPath::new(&path)
+          .ok()
+          .and_then(|folder| library.containing(&folder).cloned())
+        else {
+          continue;
+        };
+        let holder_id: i32 = folders::table
+          .filter(folders::path.eq(holder.display()))
+          .select(folders::id)
+          .first(conn)?;
+        diesel::update(tracks::table.filter(tracks::folder_id.eq(id)))
+          .set(tracks::folder_id.eq(holder_id))
+          .execute(conn)?;
+      }
+      diesel::delete(folders::table.filter(folders::path.ne_all(&kept))).execute(conn)?;
       remove_orphans(conn)
     })
+  }
+
+  fn set_folder_hidden(&self, folder: &FolderPath, hidden: bool) -> AppResult<()> {
+    let changed = diesel::update(folders::table.filter(folders::path.eq(folder.display())))
+      .set(folders::hidden.eq(hidden))
+      .execute(&mut *self.conn())?;
+    if changed == 0 {
+      return Err(LibraryError::NotInLibrary.into());
+    }
+    Ok(())
   }
 }
 
@@ -1059,6 +1120,7 @@ impl LibraryQueries for SqliteStore {
     let conn = &mut *self.conn();
     let rows = library_source()
       .filter(tracks::folder_id.eq(key))
+      .filter(present())
       .order(library_order())
       .select(TrackRow::as_select())
       .load(conn)?;
@@ -1213,6 +1275,13 @@ impl SettingsStore for SqliteStore {
         .as_ref()
         .and_then(|row| parse_repeat(&row.repeat))
         .unwrap_or_default(),
+      fades: row.as_ref().is_none_or(|row| row.fades),
+      crossfade: row
+        .as_ref()
+        .and_then(|row| u8::try_from(row.crossfade_seconds).ok())
+        .and_then(|seconds| Crossfade::new(seconds).ok())
+        .unwrap_or_default(),
+      discord_status: row.as_ref().is_none_or(|row| row.discord_status),
     }
   }
 
@@ -1222,6 +1291,9 @@ impl SettingsStore for SqliteStore {
       volume: settings.volume.percent().into(),
       shuffle: settings.shuffle,
       repeat: repeat_text(settings.repeat).to_owned(),
+      fades: settings.fades,
+      crossfade_seconds: settings.crossfade.seconds().into(),
+      discord_status: settings.discord_status,
     };
     diesel::insert_into(playback_settings::table)
       .values(&row)
@@ -1523,6 +1595,11 @@ impl LyricsStore for SqliteStore {
       .execute(&mut *self.conn())?;
     Ok(())
   }
+
+  fn forget_lyrics(&self, track: TrackId) -> AppResult<()> {
+    diesel::delete(lyrics::table.find(column(track.0)?)).execute(&mut *self.conn())?;
+    Ok(())
+  }
 }
 
 #[cfg(test)]
@@ -1572,13 +1649,13 @@ mod tests {
     assert!(store.albums().unwrap().is_empty());
     let tracks = store.playlist(playlist_id).unwrap().tracks;
     assert_eq!(tracks.len(), 1);
-    assert!(tracks[0].missing);
+    assert_eq!(tracks[0].presence, Presence::Missing);
     assert!(store.track_at(&loose).is_err());
 
     store.save_folders(&with_folder).unwrap();
     store.index_tracks(&folder, &[scanned(&held, "Held")]).unwrap();
     let tracks = store.playlist(playlist_id).unwrap().tracks;
-    assert_eq!((tracks[0].id, tracks[0].missing), (id, false));
+    assert_eq!((tracks[0].id, tracks[0].presence), (id, Presence::Present));
   }
 
   #[test]
@@ -1712,12 +1789,18 @@ mod tests {
       volume: Volume::new(35).unwrap(),
       shuffle: true,
       repeat: RepeatMode::One,
+      fades: false,
+      crossfade: Crossfade::new(6).unwrap(),
+      discord_status: false,
     };
     store.save_playback_settings(saved).unwrap();
     let loaded = store.playback_settings();
     assert_eq!(loaded.volume, saved.volume);
     assert!(loaded.shuffle);
     assert_eq!(loaded.repeat, RepeatMode::One);
+    assert!(!loaded.fades);
+    assert_eq!(loaded.crossfade, saved.crossfade);
+    assert!(!loaded.discord_status);
   }
 
   #[test]
@@ -1727,6 +1810,9 @@ mod tests {
       volume: Volume::new(12).unwrap(),
       shuffle: false,
       repeat: RepeatMode::All,
+      fades: true,
+      crossfade: Crossfade::default(),
+      discord_status: true,
     };
     SqliteStore::open(&path).unwrap().save_playback_settings(saved).unwrap();
     let reopened = SqliteStore::open(&path).unwrap().playback_settings();

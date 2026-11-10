@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 /** A chip of the tab bar; TanStack Router marks the one of the current page with `data-status=active`. A chip is a link,
  * which the webview would let the user drag away as a URL, so dragging is off. It isolates its layers, so the grey
  * background gliding under its label still sits above the group's track. */
-const tabClass =
+export const tabClass =
   'relative isolate flex h-8 items-center gap-2 rounded-full px-3.5 text-sm font-semibold text-muted-foreground transition-colors [-webkit-user-drag:none] hover:text-foreground data-[status=active]:text-foreground [&_svg]:size-4'
 
 /** The tab of the section the queue was started from takes the accent, like a playlist playing in the sidebar; it wins

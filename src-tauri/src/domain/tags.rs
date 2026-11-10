@@ -86,6 +86,8 @@ pub struct SongTags {
   composers: Vec<String>,
   lyricists: Vec<String>,
   comment: Option<String>,
+  /// The words of the song, plain or timed as LRC.
+  lyrics: Option<String>,
 }
 
 /// Trimmed text, or nothing when it is blank.
@@ -129,6 +131,7 @@ impl SongTags {
       composers: Vec::new(),
       lyricists: Vec::new(),
       comment: None,
+      lyrics: None,
     })
   }
 
@@ -168,6 +171,13 @@ impl SongTags {
   pub fn with_comment(self, comment: Option<&str>) -> Self {
     Self {
       comment: text(comment),
+      ..self
+    }
+  }
+
+  pub fn with_lyrics(self, lyrics: Option<&str>) -> Self {
+    Self {
+      lyrics: text(lyrics),
       ..self
     }
   }
@@ -241,6 +251,10 @@ impl SongTags {
 
   pub fn comment(&self) -> Option<&str> {
     self.comment.as_deref()
+  }
+
+  pub fn lyrics(&self) -> Option<&str> {
+    self.lyrics.as_deref()
   }
 
   /// Whose the song's album is: its album artists, or else its main artist; nobody's when it names no artist.

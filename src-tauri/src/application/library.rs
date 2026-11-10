@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::error::{AppError, AppResult};
 use super::ports::{AudioFiles, FolderRepository, Notifier, TrackIndex};
-use super::views::FolderCheck;
+use super::views::{Folder, FolderCheck};
 use crate::domain::ids::TrackId;
-use crate::domain::library::{FolderPath, LibraryError};
+use crate::domain::library::{FolderPath, LibraryError, LibraryFolders};
 
 /// Files written per transaction, which also sets how often scan progress is reported.
 const BATCH: usize = 50;
@@ -18,6 +18,8 @@ pub struct LibraryService {
   index: Arc<dyn TrackIndex>,
   files: Arc<dyn AudioFiles>,
   notifier: Arc<dyn Notifier>,
+  /// The system music folder, which the library always reads; none when the system names none.
+  system: Option<FolderPath>,
   scanning: AtomicBool,
   rescan: AtomicBool,
 }
@@ -28,29 +30,73 @@ impl LibraryService {
     index: Arc<dyn TrackIndex>,
     files: Arc<dyn AudioFiles>,
     notifier: Arc<dyn Notifier>,
+    system: Option<FolderPath>,
   ) -> Self {
     Self {
       folders,
       index,
       files,
       notifier,
+      system,
       scanning: AtomicBool::new(false),
       rescan: AtomicBool::new(false),
     }
   }
 
+  /// The library's folders, with the system music folder kept in them.
+  fn library(&self) -> AppResult<LibraryFolders> {
+    let mut library = self.folders.load_folders()?;
+    if let Some(system) = &self.system {
+      library.keep_system(system.clone());
+    }
+    Ok(library)
+  }
+
+  /// Adds the system music folder, taking in the folders inside it, unless a folder of the library already holds it; true when it was added, so a scan should read it.
+  pub fn keep_system_folder(&self) -> AppResult<bool> {
+    let Some(system) = &self.system else {
+      return Ok(false);
+    };
+    let mut library = self.folders.load_folders()?;
+    let added = library.keep_system(system.clone());
+    if added {
+      self.folders.save_folders(&library)?;
+    }
+    Ok(added)
+  }
+
+  /// Marks the system music folder among `folders` and puts it first, the rest keeping their order.
+  pub fn mark_system(&self, mut folders: Vec<Folder>) -> Vec<Folder> {
+    for folder in &mut folders {
+      folder.system = FolderPath::new(&folder.path).is_ok_and(|path| self.system.as_ref() == Some(&path));
+    }
+    folders.sort_by_key(|folder| !folder.system);
+    folders
+  }
+
   pub fn add_folder(&self, path: &str) -> AppResult<()> {
     let folder = FolderPath::new(path)?;
-    let mut library = self.folders.load_folders()?;
+    let mut library = self.library()?;
     library.add(folder)?;
     self.folders.save_folders(&library)
   }
 
+  /// Removes a folder other than the system one; the system folder comes back, and is scanned, when the removed folder held it.
   pub fn remove_folder(&self, path: &str) -> AppResult<()> {
     let folder = FolderPath::new(path)?;
-    let mut library = self.folders.load_folders()?;
-    library.remove(&folder)?;
+    let mut library = self.library()?;
+    let system_back = library.remove(&folder)?;
     self.folders.save_folders(&library)?;
+    self.notifier.library_changed();
+    if system_back {
+      self.scan()?;
+    }
+    Ok(())
+  }
+
+  /// Hides a folder's songs from the library, or shows them again; they stay indexed meanwhile.
+  pub fn set_folder_hidden(&self, path: &str, hidden: bool) -> AppResult<()> {
+    self.folders.set_folder_hidden(&FolderPath::new(path)?, hidden)?;
     self.notifier.library_changed();
     Ok(())
   }
@@ -58,7 +104,7 @@ impl LibraryService {
   /// Tells whether files saved into `path` would show up in the library, and whether the folder can be added.
   pub fn check_folder(&self, path: &Path) -> AppResult<FolderCheck> {
     let folder = FolderPath::new(path)?;
-    let mut library = self.folders.load_folders()?;
+    let mut library = self.library()?;
     let shown = folder.display();
     if let Some(holder) = library.containing(&folder) {
       return Ok(FolderCheck::InLibrary {
@@ -76,7 +122,7 @@ impl LibraryService {
   /// The library folder that holds `path`, adding `path` as a new library folder (and scanning it) when none does.
   pub fn ensure_folder(&self, path: &Path) -> AppResult<FolderPath> {
     let folder = FolderPath::new(path)?;
-    let mut library = self.folders.load_folders()?;
+    let mut library = self.library()?;
     if let Some(holder) = library.containing(&folder) {
       return Ok(holder.clone());
     }

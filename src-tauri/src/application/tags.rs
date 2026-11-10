@@ -6,7 +6,7 @@ use specta::Type;
 
 use super::error::{AppError, AppResult, Missing};
 use super::playback::PlayerHandle;
-use super::ports::{AlbumShare, AudioFiles, CoverChange, LibraryQueries, Notifier, SongFiles, TrackIndex};
+use super::ports::{AlbumShare, AudioFiles, CoverChange, LibraryQueries, LyricsStore, Notifier, SongFiles, TrackIndex};
 use super::views::{Album, Track, TrackTags};
 use crate::domain::artists::Artists;
 use crate::domain::ids::TrackId;
@@ -31,6 +31,8 @@ pub struct TrackEdit {
   pub composers: Vec<String>,
   pub lyricists: Vec<String>,
   pub comment: Option<String>,
+  /// Blank clears them, and the song's lyrics are then looked up online like those of any song without.
+  pub lyrics: Option<String>,
   pub cover: CoverChange,
 }
 
@@ -41,6 +43,7 @@ pub struct TagService {
   files: Arc<dyn AudioFiles>,
   index: Arc<dyn TrackIndex>,
   queries: Arc<dyn LibraryQueries>,
+  lyrics: Arc<dyn LyricsStore>,
   player: Arc<PlayerHandle>,
   notifier: Arc<dyn Notifier>,
 }
@@ -60,6 +63,7 @@ impl TagService {
     files: Arc<dyn AudioFiles>,
     index: Arc<dyn TrackIndex>,
     queries: Arc<dyn LibraryQueries>,
+    lyrics: Arc<dyn LyricsStore>,
     player: Arc<PlayerHandle>,
     notifier: Arc<dyn Notifier>,
   ) -> Self {
@@ -68,6 +72,7 @@ impl TagService {
       files,
       index,
       queries,
+      lyrics,
       player,
       notifier,
     }
@@ -106,11 +111,13 @@ impl TagService {
     .with_genres(&edit.genres)
     .with_writers(&edit.composers, &edit.lyricists)
     .with_comment(edit.comment.as_deref())
+    .with_lyrics(edit.lyrics.as_deref())
     .with_album_artists(Artists::new(&edit.album_artists).ok())
     .with_release_type(edit.release_type);
     let owners_before = Artists::new(&before.album_artists).ok();
     let album_artists_edited =
       tags.album_artists() != own_album_artists(owners_before.as_ref(), before.artists.first().map(String::as_str));
+    let lyrics_edited = tags.lyrics() != before.lyrics.as_deref().map(str::trim).filter(|text| !text.is_empty());
     let plan = self.plan(&track, tags, edit.cover, album_artists_edited)?;
 
     let mut changed = vec![track];
@@ -124,6 +131,10 @@ impl TagService {
       let fresh = self.queries.tracks_by_ids(&ids).unwrap_or_default();
       (written.and(indexed), fresh)
     });
+    if lyrics_edited {
+      // whatever was found online before no longer stands, nor may it be written over the new words
+      self.lyrics.forget_lyrics(id)?;
+    }
     self.notifier.library_changed();
     result
   }

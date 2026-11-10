@@ -55,7 +55,7 @@
         "https://github.com/piscopancer/aio/releases/latest/download/latest.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }

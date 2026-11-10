@@ -2,35 +2,34 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowDownWideNarrowIcon,
-  CheckIcon,
   LibraryIcon,
-  Music2Icon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PlusIcon,
-  SearchIcon,
   Volume2Icon,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { PlaybackContext, Playlist } from '@/bindings'
+import { Count, Counts } from '@/components/count'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
+import { tabClass } from '@/components/library-tabs'
 import { Marquee } from '@/components/marquee'
 import { CreatePlaylistDialog } from '@/components/playlist-dialogs'
 import { PinBadge } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { PlaylistMenu } from '@/components/playlist-menu'
 import { Button } from '@/components/ui/button'
-import { ClearButton } from '@/components/ui/clear-button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
 import { Shortcut } from '@/components/ui/shortcut'
 import { carriesTrack, droppedTrack } from '@/lib/dnd'
 import {
+  CREATE_PLAYLIST_KEYS,
   PLAYLIST_ORDERS,
   type PlaylistOrder,
   SIDEBAR_KEYS,
+  setCreatingPlaylist,
   setPlaylistOrder,
   toggleSidebar,
   useLayout,
@@ -39,7 +38,6 @@ import { player, useIsPlayingFrom } from '@/lib/player'
 import { mutations, queries } from '@/lib/query'
 import { PIN_IDLE, pinDropMarks, usePinReorder } from '@/lib/pins'
 import { ORDERS, inListOrder } from '@/lib/playlists'
-import { matcher } from '@/lib/search'
 import { cn } from '@/lib/utils'
 
 /** The left column, given over to the playlists. */
@@ -51,13 +49,16 @@ export function Sidebar() {
   )
 }
 
+/** Size of the header's icon buttons in the narrow column: the pill of the width switch above them, 18px either side of a 16px icon. */
+const narrowHeaderButton = 'h-10 w-13'
+
 /** What switching the column does from its current width, in the hint of the column's button and in its menu. */
 const toggleLabel = (compact: boolean) => `${compact ? 'Expand' : 'Collapse'} playlists`
 
 /** The playlists column; right-clicking its empty space opens a menu that creates a playlist or switches the width. */
 function Library() {
   const { data: playlists = [] } = useQuery(queries.playlists())
-  const [creating, setCreating] = useState(false)
+  const creating = useLayout((state) => state.creatingPlaylist)
   // while the menu is open it holds the focus, so a dialog opened from it waits until it has closed
   const createOnClose = useRef(false)
   const compact = useLayout((state) => state.sidebarCompact)
@@ -70,39 +71,48 @@ function Library() {
           <section className="flex min-h-0 flex-1 flex-col rounded-lg bg-surface">
             <header
               className={cn(
-                'flex items-center gap-2 pt-4 pb-2 text-muted-foreground',
-                compact ? 'flex-col px-2' : 'px-4',
+                // the same padding as the library tabs, so both rows line up across the window, and a line under it apart from the list
+                'flex items-center border-b py-3 text-muted-foreground',
+                // 14px in the wide column puts the icon of the width switch where centring puts it in the narrow one, so switching does not move it
+                compact ? 'flex-col px-2' : 'gap-2 px-3.5',
               )}
             >
               <Hint label={toggleLabel(compact)} keys={SIDEBAR_KEYS} side="right">
-                <Button
-                  variant="ghost"
-                  className={cn('h-10 gap-3 px-2 hover:bg-surface-hover [&_svg]:size-6', compact && 'w-10 px-0')}
+                {/* a library tab chip at the size of a tab on its track, as the Folders tab is, without the track itself */}
+                <button
+                  type="button"
+                  className={cn(tabClass, 'cursor-pointer hover:bg-surface-hover', 'h-10 px-4.5')}
                   onClick={toggleSidebar}
                 >
                   <LibraryIcon />
-                  {!compact && <span className="text-base font-semibold">Playlists</span>}
-                </Button>
+                  {!compact && 'Playlists'}
+                </button>
               </Hint>
-              <Hint label="Create playlist" side="right">
+              {playlists.length > 0 && <OrderMenu order={order} compact={compact} />}
+              <Hint label="Create playlist" keys={CREATE_PLAYLIST_KEYS} side="right">
                 <Button
                   variant="ghost"
                   size="icon"
-                  className={cn('hover:bg-surface-hover', !compact && 'ml-auto')}
-                  onClick={() => setCreating(true)}
+                  // the order picker, when there, takes the free space before it
+                  className={cn(
+                    'hover:bg-surface-hover',
+                    compact ? narrowHeaderButton : playlists.length === 0 && 'ml-auto',
+                  )}
+                  onClick={() => setCreatingPlaylist(true)}
                 >
-                  <PlusIcon className="size-5" />
+                  <PlusIcon />
                 </Button>
               </Hint>
             </header>
-            {compact ? (
-              <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
-                <PlaylistRows playlists={playlists} order={order} compact reorderable />
-              </div>
-            ) : (
-              // mounted anew when the column widens again, so the search starts empty
-              <PlaylistList playlists={playlists} order={order} />
-            )}
+            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
+              {playlists.length === 0 && !compact ? (
+                <p className="px-4 py-3 text-sm text-muted-foreground">
+                  Create a playlist with the + button, then drag songs onto it.
+                </p>
+              ) : (
+                <PlaylistRows playlists={playlists} order={order} compact={compact} reorderable />
+              )}
+            </div>
           </section>
         </ContextMenuTrigger>
         <ContextMenuContent
@@ -111,7 +121,7 @@ function Library() {
             createOnClose.current = false
             // the dialog takes the focus instead of the column the menu would hand it back to
             event.preventDefault()
-            setCreating(true)
+            setCreatingPlaylist(true)
           }}
         >
           <ContextMenuItem
@@ -121,6 +131,7 @@ function Library() {
           >
             <PlusIcon />
             Create playlist
+            <Shortcut keys={CREATE_PLAYLIST_KEYS} className="ml-auto" />
           </ContextMenuItem>
           <ContextMenuItem onSelect={toggleSidebar}>
             {compact ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
@@ -130,7 +141,7 @@ function Library() {
         </ContextMenuContent>
       </ContextMenu>
       {/* outside the menu's trigger, so a right click in the dialog does not open the column's menu */}
-      <CreatePlaylistDialog open={creating} onOpenChange={setCreating} />
+      <CreatePlaylistDialog open={creating} onOpenChange={setCreatingPlaylist} />
     </>
   )
 }
@@ -170,69 +181,36 @@ function PlaylistRows({
   )
 }
 
-/** The full column: a search over the playlist names and the order picker above the list. */
-function PlaylistList({ playlists, order }: { playlists: Playlist[]; order: PlaylistOrder }) {
-  const [query, setQuery] = useState('')
-  const matches = matcher(query)
-  const shown = playlists.filter((playlist) => matches(playlist.name))
-
-  return (
-    <>
-      {playlists.length > 0 && (
-        <div className="flex items-center gap-1 px-4 pb-2">
-          <label className="relative flex min-w-0 flex-1 items-center">
-            <SearchIcon className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground" />
-            <Input
-              value={query}
-              placeholder="Search..."
-              aria-label="Search playlists"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
-              // the field keeps the webview's own menu for copy and paste rather than the column's
-              onContextMenu={(event) => event.stopPropagation()}
-              className="h-8 bg-surface-hover pr-8 pl-8 focus-visible:bg-secondary"
-            />
-            {query !== '' && <ClearButton onClear={() => setQuery('')} className="right-1 size-6" />}
-          </label>
-          <OrderMenu order={order} />
-        </div>
-      )}
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
-        {playlists.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-muted-foreground">
-            Create a playlist with the + button, then drag songs onto it.
-          </p>
-        ) : shown.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-muted-foreground">No playlists match “{query.trim()}”.</p>
-        ) : (
-          // the pinned order is set by dragging over the whole list, not a part a search left
-          <PlaylistRows playlists={shown} order={order} compact={false} reorderable={query.trim() === ''} />
-        )}
-      </div>
-    </>
-  )
-}
-
-/** Button that opens the list of orders, the current one checked. */
-function OrderMenu({ order }: { order: PlaylistOrder }) {
+/** Icon button beside the create button that opens the list of orders, the current one lit in the list and named in its hint; in the narrow column both open to the right. */
+function OrderMenu({ order, compact }: { order: PlaylistOrder; compact: boolean }) {
   return (
     <DropdownMenu>
-      <Hint label={`Sort: ${ORDERS[order].label}`}>
+      <Hint label={`Sort: ${ORDERS[order].label}`} side={compact ? 'right' : undefined}>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-8 shrink-0 text-muted-foreground hover:bg-surface-hover">
-            <ArrowDownWideNarrowIcon className="size-4" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn('hover:bg-surface-hover', compact ? narrowHeaderButton : 'ml-auto')}
+          >
+            <ArrowDownWideNarrowIcon />
           </Button>
         </DropdownMenuTrigger>
       </Hint>
-      <DropdownMenuContent align="end">
-        {PLAYLIST_ORDERS.map((key) => (
-          <DropdownMenuItem key={key} onSelect={() => setPlaylistOrder(key)}>
-            {ORDERS[key].label}
-            {key === order && <CheckIcon className="ml-auto text-primary" />}
-          </DropdownMenuItem>
-        ))}
+      <DropdownMenuContent side={compact ? 'right' : 'bottom'} align={compact ? 'start' : 'end'}>
+        {PLAYLIST_ORDERS.map((key) => {
+          const { label, icon: Icon } = ORDERS[key]
+          return (
+            // the order in use is lit like an active tab rather than ticked, and the others hover dimmer so the two never look alike
+            <DropdownMenuItem
+              key={key}
+              className={key === order ? 'bg-accent' : 'focus:bg-foreground/5'}
+              onSelect={() => setPlaylistOrder(key)}
+            >
+              <Icon className={cn(key === order && 'text-foreground')} />
+              {label}
+            </DropdownMenuItem>
+          )
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -271,8 +249,8 @@ function PlaylistLink({
             setDropping(true)
           }}
           onDragLeave={() => setDropping(false)}
-          // the narrow list has no play button, so a double click plays the playlist, or pauses it when it is playing
-          onDoubleClick={compact && playlist.trackCount > 0 ? () => player.playOrToggle(context) : undefined}
+          // a double click plays the playlist, or pauses it when it is playing, as its play button does
+          onDoubleClick={playlist.trackCount > 0 ? () => player.playOrToggle(context) : undefined}
           onDrop={(event) => {
             if (!carriesTrack(event)) return pinDrag?.onDrop(event)
             event.preventDefault()
@@ -307,10 +285,9 @@ function PlaylistLink({
               </span>
               <div className="flex min-w-0 flex-col">
                 <Marquee className={cn(playingHere && 'text-primary')}>{playlist.name}</Marquee>
-                <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                  <Music2Icon className="size-3.5 shrink-0" aria-label="Songs" />
-                  {playlist.trackCount.toLocaleString()}
-                </span>
+                <Counts>
+                  <Count kind="songs" value={playlist.trackCount} />
+                </Counts>
               </div>
               {playingHere && <Volume2Icon className="mr-2 ml-auto size-4 shrink-0 text-primary group-hover:hidden" />}
             </>

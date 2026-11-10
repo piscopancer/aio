@@ -127,7 +127,7 @@ export function searchLibrary(query: string, { tracks, albums, artists, playlist
     albums: best(
       albums,
       LIMITS.albums,
-      (album) => rank(parsed, album.title, [album.artist, album.year]),
+      (album) => rank(parsed, album.title, [...album.artists.map((artist) => artist.name), album.year]),
       (album) => album.title,
     ),
     playlists: best(

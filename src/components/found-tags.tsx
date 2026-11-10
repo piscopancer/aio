@@ -86,7 +86,7 @@ export function CoverVariants({ matches, onPick }: { matches: readonly TagMatch[
           key={cover.thumb}
           type="button"
           onClick={() => pick(cover)}
-          className="relative aspect-square cursor-pointer overflow-hidden rounded-sm bg-foreground/10 ring-primary transition-shadow hover:ring-2"
+          className="relative aspect-square cursor-pointer overflow-hidden rounded-sm bg-foreground/10 ring-primary transition-shadow hover:ring-1"
         >
           <img
             src={cover.thumb}

@@ -24,7 +24,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { player } from '@/lib/player'
-import { useCreatePlaylist } from '@/lib/playlists'
+import { useCreatePlaylist, useOrderedPlaylists } from '@/lib/playlists'
 import { editTrack } from '@/lib/track-editor'
 import { mutations, queries } from '@/lib/query'
 
@@ -48,7 +48,8 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
   const navigate = useNavigate()
   // one artist is a plain item, several get a submenu to pick from
   const soleArtist = track.artists.length === 1 ? track.artists[0] : undefined
-  const { data: playlists = [] } = useQuery(queries.playlists())
+  const playlists = useOrderedPlaylists()
+  const { data: holding = [] } = useQuery(queries.playlistsWithTrack(track.id))
   const addToPlaylist = useMutation(mutations.addToPlaylist())
   const removeFromPlaylist = useMutation(mutations.removeFromPlaylist())
   const createPlaylist = useCreatePlaylist()
@@ -95,7 +96,12 @@ function TrackMenuItems({ track, context }: TrackMenuProps) {
           </ContextMenuItem>
           {playlists.length > 0 && <ContextMenuSeparator />}
           {playlists.map(({ id, name, cover }) => (
-            <ContextMenuItem key={id} onSelect={() => addToPlaylist.mutate({ id, name, trackIds })}>
+            // a playlist that already holds the song is shown greyed out, as there is nothing to add
+            <ContextMenuItem
+              key={id}
+              disabled={holding.includes(id)}
+              onSelect={() => addToPlaylist.mutate({ id, name, trackIds })}
+            >
               <Cover src={cover} kind="playlist" className="-my-1 size-7 rounded-sm" />
               <span className="max-w-64 truncate">{name}</span>
             </ContextMenuItem>

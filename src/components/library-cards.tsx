@@ -5,14 +5,15 @@ import { AlbumMenu } from '@/components/album-menu'
 import { ArtistMenu } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
 import { MediaCard, cardLinkClass } from '@/components/media-card'
-import { plural } from '@/lib/format'
+import { credit, plural, releaseLabel } from '@/lib/format'
 
 /** Props a card passes on to its root, such as drag handlers of a pinned card. */
 type CardProps = Omit<ComponentProps<typeof MediaCard>, 'cover' | 'title' | 'subtitle' | 'context' | 'link' | 'pinned'>
 
 export function AlbumCard({ album, showArtist = true, ...props }: { album: Album; showArtist?: boolean } & CardProps) {
-  // an album of nobody names its kind where the artist would be
-  const parts = [album.year === null ? undefined : String(album.year), (showArtist && album.artist) || 'Album']
+  // an album of nobody names its kind where the artists would be
+  const owners = showArtist ? credit(album.artists) : ''
+  const parts = [album.year === null ? undefined : String(album.year), owners === '' ? releaseLabel(album) : owners]
   return (
     <AlbumMenu albumId={album.id}>
       <MediaCard

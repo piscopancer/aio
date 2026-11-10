@@ -150,6 +150,14 @@ pub async fn get_playlist(state: Ctx<'_>, id: PlaylistId) -> AppResult<PlaylistD
   blocking(move || q.playlist(id)).await
 }
 
+/// The playlists that already hold the song, which its add to playlist menu greys out.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlists_with_track(state: Ctx<'_>, track_id: TrackId) -> AppResult<Vec<PlaylistId>> {
+  let q = queries(&state);
+  blocking(move || q.playlists_with_track(track_id)).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn create_playlist(state: Ctx<'_>, name: String, cover: Option<String>) -> AppResult<PlaylistId> {

@@ -7,6 +7,7 @@ use crate::application::error::AppError;
 use crate::domain::download::{AudioQuality, Service};
 use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
 use crate::domain::playback::{PlaybackContext, QueueKey, RepeatMode};
+use crate::domain::tags::ReleaseType;
 
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -51,13 +52,17 @@ pub struct TrackTags {
   pub title: String,
   /// The credited artists in order; empty when the file names none.
   pub artists: Vec<String>,
-  /// Set only when the file names an album artist of its own, as compilations do.
-  pub album_artist: Option<String>,
+  /// Empty unless the file names album artists of its own, as compilations and joint albums do.
+  pub album_artists: Vec<String>,
   pub album: Option<String>,
   pub year: Option<u16>,
+  pub release_type: Option<ReleaseType>,
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
-  pub genre: Option<String>,
+  pub genres: Vec<String>,
+  pub composers: Vec<String>,
+  pub lyricists: Vec<String>,
+  pub comment: Option<String>,
   /// The file type by its extension, such as `MP3`.
   pub format: String,
   pub bitrate_kbps: Option<u32>,
@@ -69,10 +74,11 @@ pub struct TrackTags {
 pub struct Album {
   pub id: AlbumId,
   pub title: String,
-  /// The artist the album is filed under; an album whose files name no artist belongs to nobody.
-  pub artist_id: Option<ArtistId>,
-  pub artist: Option<String>,
+  /// The artists the album is filed under, the first one leading; empty when its files name no artist.
+  pub artists: Vec<ArtistName>,
   pub year: Option<u32>,
+  /// What kind of release it is; none when its files do not say.
+  pub release_type: Option<ReleaseType>,
   pub cover: Option<String>,
   pub track_count: u32,
   pub duration_ms: u32,
@@ -210,11 +216,19 @@ pub enum FolderCheck {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DownloadStage {
   Queued,
-  Downloading { percent: u8 },
+  /// `total_bytes` is the size of the file being received, unknown until the site tells it.
+  Downloading {
+    percent: u8,
+    total_bytes: Option<u32>,
+  },
   Converting,
   Tagging,
-  Done { track_id: TrackId },
-  Failed { error: AppError },
+  Done {
+    track_id: TrackId,
+  },
+  Failed {
+    error: AppError,
+  },
 }
 
 /// Where the artwork of a download comes from: the site's own image, or a file the user picked instead.

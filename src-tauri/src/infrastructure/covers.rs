@@ -38,7 +38,9 @@ impl CoverStore {
   /// Stores a square JPEG copy of the image, returning its path.
   fn keep(&self, image: &DynamicImage) -> AppResult<String> {
     let jpeg = square_jpeg(image).map_err(unusable)?;
-    let path = self.store(&jpeg, "jpg").map_err(|e| AppError::Storage(e.to_string()))?;
+    let path = self
+      .store(&jpeg, "jpg")
+      .map_err(|e| AppError::Storage(format!("cannot store a cover in {}: {e}", self.dir.display())))?;
     Ok(path.to_string_lossy().into_owned())
   }
 

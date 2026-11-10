@@ -12,7 +12,7 @@ function RadioCard({ className, ...props }: ComponentProps<typeof RadioGroupPrim
     <RadioGroupPrimitive.Item
       data-slot="radio-card"
       className={cn(
-        'flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-surface-hover focus-visible:ring-[3px] focus-visible:ring-ring/50 data-[state=checked]:border-primary data-[state=checked]:bg-primary/10',
+        'flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-surface-hover focus-visible:ring-1 focus-visible:ring-ring/50 data-[state=checked]:border-primary data-[state=checked]:bg-primary/10',
         className,
       )}
       {...props}

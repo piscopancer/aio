@@ -2,10 +2,10 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Music2Icon } from 'lucide-react'
 import { EmptyLibrary } from '@/components/empty-state'
-import { MetaDot, PageHeader } from '@/components/page-header'
+import { MetaStat, MetaStats, PageHeader } from '@/components/page-header'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
-import { formatLength, plural } from '@/lib/format'
+import { totalDuration } from '@/lib/format'
 import { songsContext as context } from '@/lib/player'
 import { queries } from '@/lib/query'
 import { libraryTint } from '@/lib/tint'
@@ -17,7 +17,6 @@ export const Route = createFileRoute('/')({
 
 function Songs() {
   const { data: tracks } = useSuspenseQuery(queries.tracks())
-  const totalMs = tracks.reduce((sum, track) => sum + track.durationMs, 0)
 
   return (
     <>
@@ -32,9 +31,10 @@ function Songs() {
         }
         meta={
           <>
-            <span className="font-semibold text-foreground">{plural(tracks.length, 'song')}</span>
-            {tracks.length > 0 && <MetaDot />}
-            {tracks.length > 0 && <span>{formatLength(totalMs)}</span>}
+            <MetaStats>
+              <MetaStat kind="songs" value={tracks.length} />
+              {tracks.length > 0 && <MetaStat kind="length" value={totalDuration(tracks)} />}
+            </MetaStats>
           </>
         }
       >

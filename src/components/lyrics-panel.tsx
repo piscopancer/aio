@@ -18,7 +18,15 @@ import { Hint } from '@/components/hint'
 import { Marquee } from '@/components/marquee'
 import { Transport } from '@/components/player-bar'
 import { Button } from '@/components/ui/button'
-import { FULLSCREEN_LYRICS_KEYS, LYRICS_KEYS, type LyricsView, setLyricsView, togglePanel } from '@/lib/layout'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  FULLSCREEN_LYRICS_KEYS,
+  LYRICS_KEYS,
+  type LyricsView,
+  setLyricsView,
+  togglePanel,
+  useLayout,
+} from '@/lib/layout'
 import { currentItem, player, usePlayer } from '@/lib/player'
 import { queries } from '@/lib/query'
 import { credit } from '@/lib/format'
@@ -241,23 +249,42 @@ function Stage({
   )
 }
 
-/** Where the lyrics go: the whole panel below its header, or the stage's column beside the cover with the scroll bar at the stage's edge; text that does not scroll sits in the middle. */
+/** Where the lyrics go: the whole panel below its header, or the stage's column beside the cover with the scroll bar at the stage's edge; text that does not scroll sits in the middle. `ref` gets the element that scrolls. */
 function LyricsArea({
   size,
   scrolls = false,
+  hideScrollbar = false,
+  ref,
   children,
-  ...props
-}: Omit<ComponentProps<'div'>, 'className'> & { size: Size; scrolls?: boolean }) {
-  const place = size === 'panel' ? 'relative min-h-0 flex-1 px-6' : 'absolute inset-0'
-  return (
-    <div className={cn(place, scrolls ? 'overflow-y-auto' : 'flex items-center')} {...props}>
-      {size === 'panel' && children}
+  ...handlers
+}: Pick<ComponentProps<'div'>, 'ref' | 'onWheel' | 'onTouchMove' | 'children'> & {
+  size: Size
+  scrolls?: boolean
+  /** Hides the scroll bar while the lyrics scroll by themselves. */
+  hideScrollbar?: boolean
+}) {
+  const place = size === 'panel' ? 'relative min-h-0 flex-1' : 'absolute inset-0'
+  const column = (
+    <>
+      {size === 'panel' && <div className="w-full px-6">{children}</div>}
       {size === 'wide' && <div className="mx-auto w-full max-w-4xl px-12">{children}</div>}
       {size === 'stage' && (
         <div className={STAGE_BAND}>
           <div className="ml-[calc(40%+4rem)]">{children}</div>
         </div>
       )}
+    </>
+  )
+  // the scroll area sits inside its place, as Radix pins its root to `position: relative`, which would undo `absolute`
+  return scrolls ? (
+    <div className={place} {...handlers}>
+      <ScrollArea viewportRef={ref} hideScrollbar={hideScrollbar} className="size-full">
+        {column}
+      </ScrollArea>
+    </div>
+  ) : (
+    <div ref={ref} className={cn(place, 'flex items-center')} {...handlers}>
+      {column}
     </div>
   )
 }
@@ -290,6 +317,17 @@ function TrackLyrics({ track, size }: { track: Track; size: Size }) {
       return data satisfies never
   }
 }
+
+/** Moves playback to `ms`, showing the new position at once instead of waiting for the next progress event. */
+function seekTo(ms: number) {
+  usePlayer.setState({ positionMs: ms })
+  player.seek(ms)
+}
+
+/** Which way each arrow key moves through the lines. */
+const LINE_STEPS = { ArrowLeft: -1, ArrowRight: 1 } as const
+
+const isStepKey = (key: string): key is keyof typeof LINE_STEPS => key in LINE_STEPS
 
 /** Index of the line being sung at `ms`, or -1 before the first one. */
 const lineAt = (lines: readonly LyricLine[], ms: number) => lines.findLastIndex((line) => line.startMs <= ms)
@@ -357,13 +395,50 @@ function SyncedLyrics({ lines, origin, size }: { lines: LyricLine[]; origin: Lyr
     })
   }, [active])
 
+  // the scroll bar shows only while the user steers, not while the lyrics follow the song
+  const [steering, setSteering] = useState(false)
+  const steeringTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(steeringTimer.current), [])
+
+  // the arrow keys jump to the line before or after the sung one; only the lyrics in front listen, as the panel stays mounted behind the stage
+  const view = useLayout((state) => state.lyricsView)
+  const inFront = (size === 'panel') === (view === 'panel')
+  useEffect(() => {
+    if (!inFront) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      // a focused field, slider or menu handles its own arrows first
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.shiftKey || event.metaKey) return
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
+      if (!isStepKey(event.key)) return
+      const step = LINE_STEPS[event.key]
+      const line = lines[Math.min(Math.max(active + step, 0), lines.length - 1)]
+      if (line === undefined) return
+      event.preventDefault()
+      // a jump asked for by key is followed at once, even right after scrolling by hand
+      userScrolledAt.current = -Infinity
+      seekTo(line.startMs)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [inFront, lines, active])
+
   const holdScroll = () => {
     userScrolledAt.current = performance.now()
     scrolling.current?.stop()
+    setSteering(true)
+    clearTimeout(steeringTimer.current)
+    steeringTimer.current = setTimeout(() => setSteering(false), USER_SCROLL_HOLD_MS)
   }
 
   return (
-    <LyricsArea size={size} scrolls ref={scrollRef} onWheel={holdScroll} onTouchMove={holdScroll}>
+    <LyricsArea
+      size={size}
+      scrolls
+      hideScrollbar={!steering}
+      ref={scrollRef}
+      onWheel={holdScroll}
+      onTouchMove={holdScroll}
+    >
       <div className="flex flex-col gap-4 py-[50vh]">
         {lines.map((line, index) => (
           <SungLine
@@ -395,11 +470,7 @@ function SungLine({ line, index, distance, size }: { line: LyricLine; index: num
         filter: `blur(${current ? 0 : away * 0.5}px)`,
       }}
       transition={{ type: 'spring', stiffness: 200, damping: 26 }}
-      onClick={() => {
-        // show the new position at once instead of waiting for the next progress event
-        usePlayer.setState({ positionMs: line.startMs })
-        player.seek(line.startMs)
-      }}
+      onClick={() => seekTo(line.startMs)}
       className={cn(lineText[size], 'origin-left cursor-pointer font-bold hover:opacity-100!')}
     >
       {line.text === '' ? (

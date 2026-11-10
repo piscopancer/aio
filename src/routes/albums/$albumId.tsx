@@ -1,11 +1,12 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
+import { ArtistLinks } from '@/components/artist-menu'
 import { Cover } from '@/components/cover'
-import { MetaDot, PageHeader } from '@/components/page-header'
+import { MetaStat, MetaStats, PageHeader } from '@/components/page-header'
 import { PinButton } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
-import { formatLength, plural } from '@/lib/format'
+import { releaseLabel } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
 
@@ -25,33 +26,20 @@ function AlbumPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Album"
+        eyebrow={releaseLabel(album)}
         title={album.title}
         art={album.cover}
         cover={<Cover src={album.cover} kind="album" />}
         meta={
           <>
-            {album.artistId !== null && (
-              <>
-                <Link
-                  to="/artists/$artistId"
-                  params={{ artistId: album.artistId }}
-                  className="font-semibold text-foreground hover:underline"
-                >
-                  {album.artist}
-                </Link>
-                <MetaDot />
-              </>
+            {album.artists.length > 0 && (
+              <ArtistLinks artists={album.artists} className="min-w-0 font-semibold text-foreground" />
             )}
-            {album.year !== null && (
-              <>
-                <span>{album.year}</span>
-                <MetaDot />
-              </>
-            )}
-            <span>
-              {plural(album.trackCount, 'song')}, {formatLength(album.durationMs)}
-            </span>
+            <MetaStats>
+              {album.year !== null && <MetaStat kind="year" value={album.year} />}
+              <MetaStat kind="songs" value={album.trackCount} />
+              <MetaStat kind="length" value={album.durationMs} />
+            </MetaStats>
           </>
         }
       >

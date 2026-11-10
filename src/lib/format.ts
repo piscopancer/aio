@@ -1,4 +1,5 @@
 import { convertFileSrc } from '@tauri-apps/api/core'
+import type { Album, ReleaseType, Track } from '@/bindings'
 
 const MS_PER_SECOND = 1000
 const SECONDS_PER_MINUTE = 60
@@ -12,6 +13,10 @@ export function formatClock(ms: number) {
   const seconds = String(total % SECONDS_PER_MINUTE).padStart(2, '0')
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`
 }
+
+/** How long the songs play one after another, in milliseconds. */
+export const totalDuration = (tracks: readonly Pick<Track, 'durationMs'>[]) =>
+  tracks.reduce((sum, track) => sum + track.durationMs, 0)
 
 /** Spoken form of a collection length, `1 hr 12 min` or `42 min 5 sec`. */
 export function formatLength(ms: number) {
@@ -38,6 +43,16 @@ export function formatBytes(bytes: number) {
   const value = bytes / 1000 ** exponent
   return `${value.toFixed(value < 10 && exponent > 0 ? 1 : 0)} ${units[exponent]}`
 }
+
+/** How the app names each kind of release. */
+export const RELEASE_TYPE_LABELS = {
+  album: 'Album',
+  single: 'Single',
+  ep: 'EP',
+} as const satisfies Record<ReleaseType, string>
+
+/** The kind of the album in words; an album whose files do not say counts as an album. */
+export const releaseLabel = (album: Pick<Album, 'releaseType'>) => RELEASE_TYPE_LABELS[album.releaseType ?? 'album']
 
 /** The credited artists of a song in one line, the way the file's plain artist tag writes them. */
 export function credit(artists: readonly { name: string }[]) {

@@ -1,22 +1,23 @@
 //! What the use cases need from the outside world; infrastructure and interface implement these.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde::Deserialize;
 use specta::Type;
 
+use super::downloads::DownloadRequest;
 use super::error::AppResult;
 use super::views::*;
 use crate::domain::artists::Artists;
 use crate::domain::download::{AudioQuality, Candidate, VideoFacts};
-use crate::domain::ids::{AlbumId, ArtistId, FolderId, PlaylistId, TrackId};
+use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
 use crate::domain::playback::{PlaybackContext, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
-use crate::domain::tags::SongTags;
+use crate::domain::tags::{ReleaseType, SongTags};
 
 pub trait FolderRepository: Send + Sync {
   fn load_folders(&self) -> AppResult<LibraryFolders>;
@@ -60,12 +61,13 @@ pub struct ScannedTrack {
   pub artists: Option<Artists>,
   /// The album the file names; a song without one belongs to no album.
   pub album: Option<String>,
-  /// The album artist the file names, or else its main artist; none when the file names no artist at all.
-  pub album_artist: Option<String>,
+  /// The album artists the file names, or else its main artist; none when the file names no artist at all.
+  pub album_artists: Option<Artists>,
   pub year: Option<u32>,
+  pub release_type: Option<ReleaseType>,
   pub track_no: Option<u32>,
   pub disc_no: Option<u32>,
-  pub genre: Option<String>,
+  pub genres: Vec<String>,
   pub duration_ms: u32,
   pub modified: i64,
   pub cover: Option<String>,
@@ -102,13 +104,23 @@ pub enum CoverChange {
   Remove,
 }
 
+/// What the songs of one album share, written into the others when one of them is edited.
+pub struct AlbumShare<'a> {
+  pub year: Option<u16>,
+  pub release_type: Option<ReleaseType>,
+  /// The album artists, when the album changes hands; none leaves those of each song as they are, and an empty list
+  /// gives the album to nobody.
+  pub owners: Option<&'a [String]>,
+  pub cover: &'a CoverChange,
+}
+
 /// Reading and rewriting the tags of single song files.
 pub trait SongFiles: Send + Sync {
   fn tags(&self, path: &Path) -> AppResult<TrackTags>;
   /// Writes every song tag and changes the cover.
   fn write_song(&self, path: &Path, tags: &SongTags, cover: &CoverChange) -> AppResult<()>;
-  /// Writes only what belongs to the album, the year and the cover, leaving the song's own tags alone.
-  fn write_album_art(&self, path: &Path, year: Option<u16>, cover: &CoverChange) -> AppResult<()>;
+  /// Writes only what belongs to the album, leaving the song's own tags alone.
+  fn write_album_art(&self, path: &Path, share: &AlbumShare) -> AppResult<()>;
   /// The lyrics the file holds in its tags, or else in a `.lrc` file beside it; blank text counts as none.
   fn lyrics(&self, path: &Path) -> AppResult<Option<String>>;
   /// Writes LRC or plain text into the file's lyrics tag.
@@ -136,6 +148,8 @@ pub trait LibraryQueries: Send + Sync {
   fn artist(&self, id: ArtistId) -> AppResult<ArtistDetail>;
   fn playlists(&self) -> AppResult<Vec<Playlist>>;
   fn playlist(&self, id: PlaylistId) -> AppResult<PlaylistDetail>;
+  /// The playlists that already hold the track.
+  fn playlists_with_track(&self, track: TrackId) -> AppResult<Vec<PlaylistId>>;
 
   /// Tracks of a playback context in the order its view shows them.
   fn context_tracks(&self, context: PlaybackContext) -> AppResult<Vec<Track>> {
@@ -243,9 +257,42 @@ pub struct FetchJob<'a> {
   pub cancelled: &'a AtomicBool,
 }
 
+/// How a download ended: with its song in the library, or with the reason it failed in words.
+pub enum DownloadOutcome {
+  Done(TrackId),
+  Failed(String),
+}
+
+/// A download as it is kept across launches.
+pub struct SavedDownload {
+  pub id: DownloadId,
+  pub request: DownloadRequest,
+  /// Where the song goes, resolved when it started, so a later change of the download folder leaves it alone.
+  pub folder: PathBuf,
+  /// The file the song is written to, picked once it first ran.
+  pub file_name: Option<String>,
+  /// None while it has not ended, which on launch means quitting cut it short.
+  pub outcome: Option<DownloadOutcome>,
+}
+
+/// The download settings, and the downloads the list shows, kept until the user dismisses or cancels them.
+pub trait DownloadStore: DownloadSettingsStore {
+  /// Every kept download, oldest first.
+  fn saved_downloads(&self) -> AppResult<Vec<SavedDownload>>;
+  /// Keeps a new running download and gives it its id.
+  fn add_download(&self, request: &DownloadRequest, folder: &Path) -> AppResult<DownloadId>;
+  fn set_download_file(&self, id: DownloadId, file_name: &str) -> AppResult<()>;
+  fn end_download(&self, id: DownloadId, outcome: &DownloadOutcome) -> AppResult<()>;
+  fn remove_download(&self, id: DownloadId) -> AppResult<()>;
+}
+
 /// Steps of a fetch that the caller shows.
 pub enum FetchProgress {
-  Downloading(f32),
+  /// The share of the file received so far, and the size of the whole file in bytes, which some sites only estimate.
+  Downloading {
+    fraction: f32,
+    total_bytes: u32,
+  },
   Converting,
 }
 
@@ -295,13 +342,39 @@ pub trait LyricsFinder: Send + Sync {
   fn find(&self, song: &LyricsQuery<'_>) -> AppResult<Option<OnlineLyrics>>;
 }
 
-/// What Aio knows about a song's lyrics beyond its file: where they came from, the length they were timed for,
-/// whether the file holds them yet, and when they were last looked up.
+/// What Aio remembers of a song's lyrics; found text is kept only until the song file holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LyricsState {
+  /// Found text waiting to be written into the song file.
+  Unwritten {
+    text: String,
+    origin: LyricsOrigin,
+  },
+  /// Text the song file holds now, remembered only for where it came from.
+  Written {
+    origin: LyricsOrigin,
+  },
+  Instrumental,
+  Missing,
+}
+
+impl From<LyricsFind> for LyricsState {
+  /// A new find waits to be written into the file.
+  fn from(find: LyricsFind) -> Self {
+    match find {
+      LyricsFind::Text { text, origin } => Self::Unwritten { text, origin },
+      LyricsFind::Instrumental => Self::Instrumental,
+      LyricsFind::Missing => Self::Missing,
+    }
+  }
+}
+
+/// What Aio knows about a song's lyrics beyond its file: their state, the length they were timed for, and when they
+/// were last looked up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LyricsRecord {
-  pub find: LyricsFind,
+  pub state: LyricsState,
   pub length_ms: u32,
-  pub in_file: bool,
   /// Unix seconds.
   pub checked_at: i64,
 }

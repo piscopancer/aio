@@ -6,11 +6,11 @@ import {
   type QueueKey,
   type RepeatMode,
   type TrackId,
-  commands,
   events,
 } from '@/bindings'
+import { reportError } from '@/lib/errors'
 import { plural } from '@/lib/format'
-import { unwrap } from '@/lib/ipc'
+import { commands, unwrap } from '@/lib/ipc'
 import { invalidatePlaylists } from '@/lib/query'
 
 /** The whole library in its Songs order, the context of songs played from outside any page. */
@@ -60,7 +60,7 @@ export function showOrder(context: PlaybackContext, order: TrackId[]) {
 }
 
 function report(action: Promise<unknown>) {
-  action.catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+  action.catch(reportError)
 }
 
 /** Player commands; outcomes arrive through `usePlayer`, failures as toasts. */

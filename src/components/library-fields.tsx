@@ -1,56 +1,85 @@
 import { useQuery } from '@tanstack/react-query'
-import { XIcon } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { Disc3Icon, MicVocalIcon, TagsIcon, XIcon } from 'lucide-react'
+import { type ComponentProps, useRef, useState } from 'react'
 import type { Album } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { Combobox } from '@/components/ui/combobox'
-import { plural } from '@/lib/format'
+import type { FieldLabelProps } from '@/components/ui/field-label'
+import { credit, plural } from '@/lib/format'
 import { queries } from '@/lib/query'
 import { suggest } from '@/lib/search'
+import { cn } from '@/lib/utils'
 
 /** How many suggestions the artist, album and genre fields show. */
 const SUGGESTIONS = 8
 
-/** The library album a song with this album title and owning artist is filed under, if it exists; a song without an album title is on none, and one without an owner is on the album of nobody by that title. */
-export const findAlbum = (albums: readonly Album[], title: string, owner: string | null) =>
-  title.trim() === '' ? undefined : albums.find((item) => item.title === title.trim() && item.artist === owner)
+/** Whether two lists name the same values in the same order. */
+export const sameNames = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((name, index) => name === b[index])
+
+/** Whether the album is filed under exactly these artists, in this order. */
+export const ownedBy = (album: Album, owners: readonly string[]) =>
+  sameNames(
+    album.artists.map((artist) => artist.name),
+    owners,
+  )
+
+/** The library album a song with this album title and owning artists is filed under, if it exists; a song without an album title is on none, and one without owners is on the album of nobody by that title. */
+export const findAlbum = (albums: readonly Album[], title: string, owners: readonly string[]) =>
+  title.trim() === '' ? undefined : albums.find((item) => item.title === title.trim() && ownedBy(item, owners))
 
 /** The artists with `main` moved or added to the front, as when a picked album names whose it is; an album of nobody
  * leaves them as they are. */
 export const leading = (main: string | null, artists: readonly string[]) =>
   main === null ? [...artists] : [main, ...artists.filter((name) => name.toLowerCase() !== main.toLowerCase())]
 
-/** Characters that end a typed artist name and start the next one. */
+/** The album artists a song names apart from its main artist `main`: the main artist alone names none, as the backend stores it. */
+export const ownAlbumArtists = (albumArtists: readonly string[], main: string | null) =>
+  main !== null && sameNames(albumArtists, [main]) ? [] : albumArtists
+
+/** Characters that end a typed name and start the next one. */
 const NAME_BREAK = ','
 
-/** Artists field of a song: the credited artists as chips in order, the main one first, that can be dragged into another order or removed, and a text field under them that suggests the library's artists and adds the typed name on comma, Enter or leaving the field. */
-export function ArtistsField({
+/** One value the library already knows, offered while typing. */
+type Known = { key: string | number; label: string; subtitle: string; cover?: string | null }
+
+/** A list of names or words as chips in order, the first one leading, that can be dragged into another order or removed, and a text field under them that suggests the `known` values and adds the typed one on comma, Enter or leaving the field; with `kind`, every chip and suggestion shows its picture. */
+function ChipsField({
+  label,
+  icon,
+  hint,
   value,
   onValueChange,
+  known,
+  kind,
   placeholder,
   className,
-}: {
+}: FieldLabelProps & {
+  label: string
   value: readonly string[]
   onValueChange: (value: string[]) => void
+  known: readonly Known[]
+  kind?: ComponentProps<typeof Cover>['kind']
   placeholder?: string | undefined
   className?: string
 }) {
-  const { data: artists = [] } = useQuery(queries.artists())
   const [draft, setDraft] = useState('')
   const dragged = useRef<number | null>(null)
-  const coverOf = (name: string) => artists.find((item) => item.name === name.trim())?.cover ?? null
-  const listed = (name: string) => value.some((known) => known.toLowerCase() === name.trim().toLowerCase())
-  const options = suggest(
-    draft,
-    artists.filter((item) => !listed(item.name)),
-    SUGGESTIONS,
-    (item) => item.name,
-  ).map((item) => ({
-    key: item.id,
-    label: item.name,
-    subtitle: plural(item.trackCount, 'song'),
-    art: <Cover src={item.cover} kind="artist" />,
-  }))
+  const picture = (name: string, className?: string) =>
+    kind === undefined ? undefined : (
+      <Cover src={known.find((item) => item.label === name.trim())?.cover ?? null} kind={kind} className={className} />
+    )
+  const listed = (name: string) => value.some((item) => item.toLowerCase() === name.trim().toLowerCase())
+  const options = (
+    draft.trim() === ''
+      ? known.filter((item) => !listed(item.label)).slice(0, SUGGESTIONS)
+      : suggest(
+          draft,
+          known.filter((item) => !listed(item.label)),
+          SUGGESTIONS,
+          (item) => item.label,
+        )
+  ).map((item) => ({ key: item.key, label: item.label, subtitle: item.subtitle, art: picture(item.label) }))
 
   const add = (names: readonly string[]) => {
     const fresh = names.map((name) => name.trim()).filter((name) => name !== '' && !listed(name))
@@ -70,8 +99,10 @@ export function ArtistsField({
 
   return (
     <Combobox
-      label="Artists"
-      placeholder={value.length === 0 ? placeholder : 'Add artist'}
+      label={label}
+      icon={icon}
+      hint={hint}
+      placeholder={value.length === 0 ? placeholder : 'Add more'}
       value={draft}
       onValueChange={(text) => {
         // a typed or pasted comma closes every name before it
@@ -96,8 +127,8 @@ export function ArtistsField({
         }
       }}
       onBlur={commit}
-      // a name not in the library yet still gets a blank picture, as the artist it will create
-      art={draft.trim() === '' ? undefined : <Cover src={coverOf(draft)} kind="artist" />}
+      // a name not in the library yet still gets a blank picture, as what it will create
+      art={draft.trim() === '' ? undefined : picture(draft)}
       className={className}
     >
       {value.length > 0 && (
@@ -119,9 +150,12 @@ export function ArtistsField({
                 }
               }}
               onDragEnd={() => (dragged.current = null)}
-              className="flex cursor-grab items-center gap-1.5 rounded-full bg-foreground/10 py-0.5 pr-0.5 pl-0.5 text-sm active:cursor-grabbing"
+              className={cn(
+                'flex cursor-grab items-center gap-1.5 rounded-full bg-foreground/10 py-0.5 pr-0.5 text-sm active:cursor-grabbing',
+                kind === undefined ? 'pl-2.5' : 'pl-0.5',
+              )}
             >
-              <Cover src={coverOf(name)} kind="artist" className="size-6" />
+              {picture(name, 'size-6')}
               <span className="max-w-48 truncate">{name}</span>
               <button
                 type="button"
@@ -139,27 +173,56 @@ export function ArtistsField({
   )
 }
 
-/** Album field that suggests the library's named albums, only those of `owner` once it is given, with the cover of the one the text names. */
+/** Field of people as chips in order, the first one leading, that suggests the library's artists with their pictures; the credited artists of a song by default, and also its album artists and writers. */
+export function ArtistsField({
+  label = 'Artists',
+  icon = MicVocalIcon,
+  ...props
+}: Omit<ComponentProps<typeof ChipsField>, 'label' | 'known' | 'kind'> & { label?: string }) {
+  const { data: artists = [] } = useQuery(queries.artists())
+  const known = artists.map((item) => ({
+    key: item.id,
+    label: item.name,
+    subtitle: plural(item.trackCount, 'song'),
+    cover: item.cover,
+  }))
+  return <ChipsField {...props} label={label} icon={icon} known={known} kind="artist" />
+}
+
+/** Genres of a song as chips, suggesting the genres the library's songs already name, the most common first. */
+export function GenresField({
+  icon = TagsIcon,
+  ...props
+}: Omit<ComponentProps<typeof ChipsField>, 'label' | 'known' | 'kind'>) {
+  const { data: genres = [] } = useQuery(queries.genres())
+  const known = genres.map((item) => ({ key: item.name, label: item.name, subtitle: plural(item.trackCount, 'song') }))
+  return <ChipsField {...props} label="Genres" icon={icon} known={known} />
+}
+
+/** Album field that suggests the library's named albums, only those of `owners` once they are given, with the cover of the one the text names. */
 export function AlbumField({
+  label = 'Album',
+  icon = Disc3Icon,
+  hint,
   value,
   onValueChange,
-  owner,
+  owners,
   onPick,
   placeholder,
   className,
-}: {
+}: FieldLabelProps & {
+  label?: string
   value: string
   onValueChange: (value: string) => void
-  /** The album artist, or else the artist, the album belongs to. */
-  /** Whose albums are offered; with no owner yet, every album is. */
-  owner: string | null
+  /** Whose albums are offered: the album artists, or else the artist, the album belongs to; with none yet, every album is. */
+  owners: readonly string[]
   onPick: (album: Album) => void
   placeholder?: string | undefined
   className?: string
 }) {
   const { data: albums = [] } = useQuery(queries.albums())
-  const target = findAlbum(albums, value, owner)
-  const candidates = albums.filter((item) => owner === null || item.artist === owner)
+  const target = findAlbum(albums, value, owners)
+  const candidates = albums.filter((item) => owners.length === 0 || ownedBy(item, owners))
   const options = (
     value.trim() === ''
       ? candidates.slice(0, SUGGESTIONS)
@@ -167,13 +230,15 @@ export function AlbumField({
   ).map((item) => ({
     key: item.id,
     label: item.title,
-    subtitle: [item.artist, item.year].filter((part) => part !== null).join(' • '),
+    subtitle: [credit(item.artists), item.year].filter((part) => part !== null && part !== '').join(' • '),
     art: <Cover src={item.cover} kind="album" className="rounded-sm" />,
     album: item,
   }))
   return (
     <Combobox
-      label="Album"
+      label={label}
+      icon={icon}
+      hint={hint}
       placeholder={placeholder}
       value={value}
       onValueChange={onValueChange}
@@ -183,39 +248,6 @@ export function AlbumField({
         onPick(option.album)
       }}
       art={value.trim() === '' ? undefined : <Cover src={target?.cover ?? null} kind="album" className="rounded-sm" />}
-      className={className}
-    />
-  )
-}
-
-/** Genre field that suggests the genres the library's songs already name, the most common first while it is empty. */
-export function GenreField({
-  value,
-  onValueChange,
-  placeholder,
-  className,
-}: {
-  value: string
-  onValueChange: (value: string) => void
-  placeholder?: string | undefined
-  className?: string
-}) {
-  const { data: genres = [] } = useQuery(queries.genres())
-  // the genre the field already holds is not offered again
-  const candidates = genres.filter((item) => item.name.toLowerCase() !== value.trim().toLowerCase())
-  const options = (
-    value.trim() === ''
-      ? candidates.slice(0, SUGGESTIONS)
-      : suggest(value, candidates, SUGGESTIONS, (item) => item.name)
-  ).map((item) => ({ key: item.name, label: item.name, subtitle: plural(item.trackCount, 'song') }))
-  return (
-    <Combobox
-      label="Genre"
-      placeholder={placeholder}
-      value={value}
-      onValueChange={onValueChange}
-      options={options}
-      onPick={(option) => onValueChange(option.label)}
       className={className}
     />
   )

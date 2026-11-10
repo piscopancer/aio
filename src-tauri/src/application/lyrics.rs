@@ -3,9 +3,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use super::downloads::now;
-use super::error::{AppError, AppResult};
+use super::error::{AppError, AppResult, Missing};
 use super::playback::PlayerHandle;
-use super::ports::{LibraryQueries, LyricsFind, LyricsFinder, LyricsQuery, LyricsRecord, LyricsStore, SongFiles};
+use super::ports::{
+  LibraryQueries, LyricsFind, LyricsFinder, LyricsQuery, LyricsRecord, LyricsState, LyricsStore, SongFiles,
+};
 use super::views::{LyricLine, LyricWord, LyricsOrigin, LyricsView};
 use crate::domain::ids::TrackId;
 use crate::domain::lyrics::{Lyrics, same_recording};
@@ -49,7 +51,7 @@ impl LyricsService {
       .tracks_by_ids(&[id])?
       .into_iter()
       .next()
-      .ok_or(AppError::NotFound)?;
+      .ok_or(AppError::NotFound(Missing::Track(id)))?;
     // the song asked about is usually the one starting to play, so the one before it can now be written
     self.write_unwritten_later();
     let record = self
@@ -60,25 +62,25 @@ impl LyricsService {
     if let Some(text) = self.songs.lyrics(Path::new(&track.path))? {
       let origin = match &record {
         Some(LyricsRecord {
-          find: LyricsFind::Text { origin, .. },
-          in_file: true,
+          state: LyricsState::Written { origin },
           ..
         }) => *origin,
         _ => LyricsOrigin::File,
       };
       return Ok(view(&text, origin));
     }
+    // lyrics written into a file that lost them since are looked up again
     match record {
       Some(LyricsRecord {
-        find: LyricsFind::Text { text, origin },
+        state: LyricsState::Unwritten { text, origin },
         ..
       }) => return Ok(view(&text, origin)),
       Some(LyricsRecord {
-        find: LyricsFind::Instrumental,
+        state: LyricsState::Instrumental,
         ..
       }) => return Ok(LyricsView::Instrumental),
       Some(LyricsRecord {
-        find: LyricsFind::Missing,
+        state: LyricsState::Missing,
         checked_at,
         ..
       }) if now() - checked_at < MISSING_RETRY_SECS => return Ok(LyricsView::Missing),
@@ -92,14 +94,15 @@ impl LyricsService {
       album: track.album.as_deref(),
       duration_ms: track.duration_ms,
     })?;
+    let length_ms = found.as_ref().map_or(track.duration_ms, |found| found.length_ms);
+    let find = found.map_or(LyricsFind::Missing, |found| found.find);
     let record = LyricsRecord {
-      length_ms: found.as_ref().map_or(track.duration_ms, |found| found.length_ms),
-      find: found.map_or(LyricsFind::Missing, |found| found.find),
-      in_file: false,
+      state: find.clone().into(),
+      length_ms,
       checked_at: now(),
     };
     self.store.save_lyrics_record(id, &record)?;
-    Ok(match record.find {
+    Ok(match find {
       LyricsFind::Text { text, origin } => view(&text, origin),
       LyricsFind::Instrumental => LyricsView::Instrumental,
       LyricsFind::Missing => LyricsView::Missing,

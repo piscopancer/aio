@@ -43,6 +43,7 @@ tauri-plugin-opener = "2"
 # the tag search: AcoustID fingerprints of the songs' sound, sent as URL-safe base64
 rusty-chromaprint = "0.3"
 base64 = "0.22"
+opus-pure = "0.2.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
@@ -64,3 +65,8 @@ windows = { version = "0.62", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 resvg = { version = "0.45", default-features = false }
+
+# dependencies are built optimised in dev too, so decoding covers and reading tags run at release pace, while the
+# app's own crate stays a quick debug build
+[profile.dev.package."*"]
+opt-level = 3

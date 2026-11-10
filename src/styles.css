@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
 
 /* while a pinned item is dragged to a new place; see `PIN_DRAG_ATTRIBUTE` */
 @custom-variant pin-dragging (:root[data-pin-dragging] &);
@@ -37,6 +38,7 @@
 
 @theme inline {
   --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);

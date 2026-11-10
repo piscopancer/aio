@@ -6,13 +6,33 @@ import { SourceCover } from '@/components/cover'
 import { Hint } from '@/components/hint'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { formatBytes } from '@/lib/format'
 import { errorMessage } from '@/lib/ipc'
 import { mutations, queries } from '@/lib/query'
 import { cn } from '@/lib/utils'
 
-/** Stages a download can still leave on its own. */
-function isActive(stage: DownloadStage) {
+/** A stage a download can still leave on its own. */
+type ActiveStage = Exclude<DownloadStage, { kind: 'done' | 'failed' }>
+
+/** Whether the download is still running. */
+function isActive(stage: DownloadStage): stage is ActiveStage {
   return stage.kind !== 'done' && stage.kind !== 'failed'
+}
+
+/** What a running download is doing, in words: how far the transfer is and how big the file is, once the site tells it. */
+function stageLabel(stage: ActiveStage) {
+  switch (stage.kind) {
+    case 'queued':
+      return 'Waiting to start'
+    case 'downloading':
+      return stage.totalBytes === null ? `${stage.percent}%` : `${stage.percent}% / ${formatBytes(stage.totalBytes)}`
+    case 'converting':
+      return 'Converting'
+    case 'tagging':
+      return 'Writing tags'
+    default:
+      return stage satisfies never
+  }
 }
 
 /** Rough completion of a stage in percent; converting and tagging come after the transfer. */
@@ -33,7 +53,7 @@ function stagePercent(stage: DownloadStage) {
   }
 }
 
-/** Toolbar button listing the downloads of this session; a ring around it fills while any of them runs. */
+/** Toolbar button listing the downloads, kept across launches until dismissed; a ring around it fills while any of them runs. */
 export function DownloadsButton(props: Omit<ComponentProps<typeof Button>, 'children'>) {
   const { data: downloads = [] } = useQuery(queries.downloads())
   const active = downloads.filter((d) => isActive(d.stage))
@@ -91,9 +111,11 @@ function DownloadRow({ download }: { download: DownloadView }) {
         </Hint>
       </div>
       {active && (
-        <div className="relative size-6 shrink-0">
-          <ProgressRing percent={stagePercent(stage)} thickness={3} />
-        </div>
+        <Hint label={stageLabel(stage)}>
+          <div className="relative size-6 shrink-0">
+            <ProgressRing percent={stagePercent(stage)} thickness={3} />
+          </div>
+        </Hint>
       )}
       <Button
         variant="ghost"

@@ -32,7 +32,7 @@ export function CoverPicker({
         type="button"
         aria-label="Choose image"
         disabled={importCover.isPending}
-        className="size-full cursor-pointer rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="size-full cursor-pointer rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring/50"
         onClick={async () => {
           const file = await open({
             title: 'Choose an image',

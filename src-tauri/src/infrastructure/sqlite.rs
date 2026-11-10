@@ -7,24 +7,26 @@ use std::sync::{Mutex, MutexGuard};
 
 use diesel::connection::SimpleConnection;
 use diesel::dsl::{count, sum};
-use diesel::helper_types::{IsNotNull, IsNull, LeftJoin};
+use diesel::helper_types::{IsNotNull, IsNull, LeftJoin, LeftJoinOn};
 use diesel::prelude::*;
 use diesel::result::{ConnectionError, Error as DieselError};
 use diesel::sqlite::Sqlite;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use super::schema::{
-  albums, artists, download_settings, folders, lyrics, playback_settings, player_session, playlist_tracks, playlists,
-  track_artists, tracks,
+  album_artists, albums, artists, download_settings, downloads, folders, lyrics, playback_settings, player_session,
+  playlist_tracks, playlists, track_artists, track_genres, tracks,
 };
-use crate::application::error::{AppError, AppResult};
+use crate::application::downloads::DownloadRequest;
+use crate::application::error::{AppError, AppResult, Missing};
 use crate::application::ports::*;
 use crate::application::views::*;
-use crate::domain::ids::{AlbumId, ArtistId, FolderId, PlaylistId, TrackId};
+use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
 use crate::domain::playback::{QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
+use crate::domain::tags::ReleaseType;
 
 /// Files of `src-tauri/migrations`, compiled in and applied at startup.
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
@@ -32,7 +34,7 @@ const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 impl From<DieselError> for AppError {
   fn from(error: DieselError) -> Self {
     match error {
-      DieselError::NotFound => Self::NotFound,
+      DieselError::NotFound => Self::NotFound(Missing::Record),
       other => Self::Storage(other.to_string()),
     }
   }
@@ -177,6 +179,27 @@ fn credits(conn: &mut SqliteConnection, ids: &[i32]) -> AppResult<HashMap<i32, V
   Ok(credits)
 }
 
+/// The artists each of the albums is filed under, in their order.
+fn album_credits(conn: &mut SqliteConnection, ids: &[i32]) -> AppResult<HashMap<i32, Vec<ArtistName>>> {
+  let mut credits: HashMap<i32, Vec<ArtistName>> = HashMap::with_capacity(ids.len());
+  for part in ids.chunks(CHUNK) {
+    let rows: Vec<(i32, i32, String)> = album_artists::table
+      .inner_join(artists::table)
+      .filter(album_artists::album_id.eq_any(part))
+      .order((album_artists::album_id, album_artists::position))
+      .select((album_artists::album_id, artists::id, artists::name))
+      .load(conn)?;
+    for (album, id, name) in rows {
+      let artist = ArtistName {
+        id: ArtistId(stored(id)?),
+        name,
+      };
+      credits.entry(album).or_default().push(artist);
+    }
+  }
+  Ok(credits)
+}
+
 fn tracks_from(conn: &mut SqliteConnection, rows: Vec<TrackRow>) -> AppResult<Vec<Track>> {
   let ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
   let credits = credits(conn, &ids)?;
@@ -189,11 +212,37 @@ fn tracks_from(conn: &mut SqliteConnection, rows: Vec<TrackRow>) -> AppResult<Ve
     .collect()
 }
 
-/// Tracks with their main artist and album, if any, the source of every `TrackRow`; the main artist only sorts them.
-type TrackSource = LeftJoin<LeftJoin<tracks::table, artists::table>, albums::table>;
+/// Tracks with their album, if any, the source of every `TrackRow`.
+type TrackSource = LeftJoin<tracks::table, albums::table>;
 
 fn track_source() -> TrackSource {
-  tracks::table.left_join(artists::table).left_join(albums::table)
+  tracks::table.left_join(albums::table)
+}
+
+/// Position of a song's main artist among its credits.
+const MAIN_CREDIT: i32 = 0;
+
+/// The join of a track to its first credit.
+type MainCredit =
+  diesel::dsl::And<diesel::dsl::Eq<track_artists::track_id, tracks::id>, diesel::dsl::Eq<track_artists::position, i32>>;
+
+/// Tracks with their album and main artist, for the lists in `library_order`; the main artist only sorts them.
+type LibrarySource = LeftJoinOn<
+  LeftJoinOn<TrackSource, track_artists::table, MainCredit>,
+  artists::table,
+  diesel::dsl::Eq<artists::id, track_artists::artist_id>,
+>;
+
+fn library_source() -> LibrarySource {
+  track_source()
+    .left_join(
+      track_artists::table.on(
+        track_artists::track_id
+          .eq(tracks::id)
+          .and(track_artists::position.eq(MAIN_CREDIT)),
+      ),
+    )
+    .left_join(artists::table.on(artists::id.eq(track_artists::artist_id)))
 }
 
 /// Order of library-wide track lists: by artist, the songs credited to nobody last, then album, then position on the
@@ -225,12 +274,10 @@ fn library_order() -> LibraryOrder {
 struct AlbumRow {
   id: i32,
   title: String,
-  artist_id: Option<i32>,
-  #[diesel(select_expression = artists::name.nullable())]
-  artist: Option<String>,
   year: Option<i32>,
   cover: Option<String>,
   pin: Option<i32>,
+  release_type: Option<String>,
 }
 
 /// Which albums a view lists, each with its own order.
@@ -248,13 +295,11 @@ struct NewTrack<'a> {
   folder_id: Option<i32>,
   path: &'a str,
   title: &'a str,
-  artist_id: Option<i32>,
   album_id: Option<i32>,
   track_no: Option<i32>,
   disc_no: Option<i32>,
   duration_ms: i32,
   modified: i64,
-  genre: Option<&'a str>,
   cover: Option<&'a str>,
 }
 
@@ -350,18 +395,20 @@ impl SqliteStore {
 
   fn load_albums(&self, scope: AlbumScope) -> AppResult<Vec<Album>> {
     let conn = &mut *self.conn();
-    let query = albums::table
-      .left_join(artists::table)
-      .select(AlbumRow::as_select())
-      .into_boxed();
+    let query = albums::table.select(AlbumRow::as_select()).into_boxed();
+    let owned_by = |id: i32| {
+      album_artists::table
+        .filter(album_artists::artist_id.eq(id))
+        .select(album_artists::album_id)
+    };
     let query = match scope {
       AlbumScope::All => query.order(albums::title),
       AlbumScope::One(id) => query.filter(albums::id.eq(id)),
       AlbumScope::ByArtist(id) => query
-        .filter(albums::artist_id.eq(id))
+        .filter(albums::id.eq_any(owned_by(id)))
         .order((albums::year.desc(), albums::title)),
       AlbumScope::AppearsOn(id) => query
-        .filter(albums::artist_id.is_not(id))
+        .filter(albums::id.ne_all(owned_by(id)))
         .filter(
           albums::id.eq_any(
             tracks::table
@@ -375,6 +422,8 @@ impl SqliteStore {
         .order((albums::year.desc(), albums::title)),
     };
     let rows = query.load(conn)?;
+    let ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
+    let mut owners = album_credits(conn, &ids)?;
     let totals = totals_by(
       tracks::table
         .filter(present())
@@ -397,9 +446,9 @@ impl SqliteStore {
         Ok(Album {
           id: AlbumId(stored(row.id)?),
           title: row.title,
-          artist_id: row.artist_id.map(stored).transpose()?.map(ArtistId),
-          artist: row.artist,
+          artists: owners.remove(&row.id).unwrap_or_default(),
           year: stored_opt(row.year)?,
+          release_type: row.release_type.as_deref().and_then(ReleaseType::parse),
           cover: row.cover,
           track_count: tracks,
           duration_ms,
@@ -409,8 +458,7 @@ impl SqliteStore {
       .collect()
   }
 
-  /// Artists credited on at least one track, as its main artist or a guest; one who only appears as an album artist
-  /// is left out.
+  /// Artists credited on at least one track, as its main artist or a guest, or owning an album.
   fn load_artists(&self, only: Option<i32>) -> AppResult<Vec<Artist>> {
     let conn = &mut *self.conn();
     let mut query = artists::table
@@ -429,21 +477,20 @@ impl SqliteStore {
       .load(conn)?
       .into_iter()
       .collect();
-    let album_counts: HashMap<i32, i64> = albums::table
-      .filter(albums::artist_id.is_not_null())
-      .group_by(albums::artist_id)
-      .select((albums::artist_id.assume_not_null(), count(albums::id)))
+    let album_counts: HashMap<i32, i64> = album_artists::table
+      .group_by(album_artists::artist_id)
+      .select((album_artists::artist_id, count(album_artists::album_id)))
       .load(conn)?
       .into_iter()
       .collect();
     // the newest album with art stands for the artist, or else the newest one they sing on as a guest, or else a song
     // of theirs that is on no album
     let covers = first_per_key(
-      albums::table
-        .filter(albums::artist_id.is_not_null())
+      album_artists::table
+        .inner_join(albums::table)
         .filter(albums::cover.is_not_null())
         .order(albums::year.desc())
-        .select((albums::artist_id.assume_not_null(), albums::cover.assume_not_null()))
+        .select((album_artists::artist_id, albums::cover.assume_not_null()))
         .load::<(i32, String)>(conn)?,
     );
     let guest_covers = first_per_key(
@@ -462,13 +509,12 @@ impl SqliteStore {
         .select((track_artists::artist_id, tracks::cover.assume_not_null()))
         .load::<(i32, String)>(conn)?,
     );
+    // an artist counts once they sing on a song or own an album, as the album artist of a compilation may do neither else
     rows
       .into_iter()
-      .filter_map(|(id, name, pin)| {
-        let track_count = *track_counts.get(&id)?;
-        Some((id, name, pin, track_count))
-      })
-      .map(|(id, name, pin, track_count)| {
+      .filter(|(id, ..)| track_counts.contains_key(id) || album_counts.contains_key(id))
+      .map(|(id, name, pin)| {
+        let track_count = track_counts.get(&id).copied().unwrap_or_default();
         Ok(Artist {
           id: ArtistId(stored(id)?),
           name,
@@ -554,8 +600,9 @@ impl SqliteStore {
 /// Id, name, own cover, creation and last play time, and pin of a stored playlist.
 type PlaylistRow = (i32, String, Option<String>, i64, Option<i64>, Option<i32>);
 
-fn single<T>(rows: Vec<T>) -> AppResult<T> {
-  rows.into_iter().next().ok_or(AppError::NotFound)
+/// The one row a lookup by id gave, or `missing` when there is none.
+fn single<T>(rows: Vec<T>, missing: Missing) -> AppResult<T> {
+  rows.into_iter().next().ok_or(AppError::NotFound(missing))
 }
 
 fn upsert_artist(conn: &mut SqliteConnection, name: &str) -> AppResult<i32> {
@@ -579,38 +626,75 @@ enum AlbumArt {
   Replace,
 }
 
-/// Finds or creates the album of a scanned track and settles its year and cover by `art`.
+/// The album with this title filed under exactly these artists, in this order.
+fn find_album(conn: &mut SqliteConnection, title: &str, owner_ids: &[i32]) -> AppResult<Option<i32>> {
+  // the title narrows the search, and the whole list of album artists settles it
+  let candidates: Vec<i32> = albums::table
+    .filter(albums::title.eq(title))
+    .select(albums::id)
+    .load(conn)?;
+  for id in candidates {
+    let owners: Vec<i32> = album_artists::table
+      .filter(album_artists::album_id.eq(id))
+      .order(album_artists::position)
+      .select(album_artists::artist_id)
+      .load(conn)?;
+    if owners == owner_ids {
+      return Ok(Some(id));
+    }
+  }
+  Ok(None)
+}
+
+/// Finds or creates the album of a scanned track and settles its year, cover and release type by `art`.
 fn upsert_album(
   conn: &mut SqliteConnection,
   track: &ScannedTrack,
   title: &str,
-  artist_id: Option<i32>,
+  owner_ids: &[i32],
   art: AlbumArt,
 ) -> AppResult<i32> {
   let year = column_opt(track.year)?;
-  let existing = albums::table
-    .filter(albums::title.eq(title))
-    .filter(albums::artist_id.is(artist_id))
-    .select(albums::id)
-    .first::<i32>(conn)
-    .optional()?;
-  let Some(id) = existing else {
+  let release_type = track.release_type.map(ReleaseType::tag);
+  let Some(id) = find_album(conn, title, owner_ids)? else {
     let id = diesel::insert_into(albums::table)
       .values((
         albums::title.eq(title),
-        albums::artist_id.eq(artist_id),
         albums::year.eq(year),
         albums::cover.eq(&track.cover),
+        albums::release_type.eq(release_type),
       ))
       .returning(albums::id)
       .get_result(conn)?;
+    let rows = (0..)
+      .zip(owner_ids)
+      .map(|(position, artist_id)| {
+        (
+          album_artists::album_id.eq(id),
+          album_artists::artist_id.eq(*artist_id),
+          album_artists::position.eq(position),
+        )
+      })
+      .collect::<Vec<_>>();
+    if !rows.is_empty() {
+      diesel::insert_into(album_artists::table).values(&rows).execute(conn)?;
+    }
     return Ok(id);
   };
   if art == AlbumArt::Replace {
     diesel::update(albums::table.find(id))
-      .set((albums::year.eq(year), albums::cover.eq(&track.cover)))
+      .set((
+        albums::year.eq(year),
+        albums::cover.eq(&track.cover),
+        albums::release_type.eq(release_type),
+      ))
       .execute(conn)?;
     return Ok(id);
+  }
+  if release_type.is_some() {
+    diesel::update(albums::table.find(id).filter(albums::release_type.is_null()))
+      .set(albums::release_type.eq(release_type))
+      .execute(conn)?;
   }
   if year.is_some() {
     diesel::update(albums::table.find(id).filter(albums::year.is_null()))
@@ -626,7 +710,7 @@ fn upsert_album(
 }
 
 /// Ids of the credited artists, in order, and of the album a scanned track belongs to, if it names one, creating them
-/// when new; the album artist is kept only for an album.
+/// when new; the album artists are kept only for an album.
 fn track_owners(
   conn: &mut SqliteConnection,
   track: &ScannedTrack,
@@ -641,20 +725,13 @@ fn track_owners(
   let Some(title) = &track.album else {
     return Ok((artist_ids, None));
   };
-  let album_artist_id = track
-    .album_artist
-    .as_deref()
+  let owner_ids = track
+    .album_artists
+    .iter()
+    .flat_map(|owners| owners.names())
     .map(|name| upsert_artist(conn, name))
-    .transpose()?;
-  Ok((
-    artist_ids,
-    Some(upsert_album(conn, track, title, album_artist_id, art)?),
-  ))
-}
-
-/// The first of the credited artists, whom the track row keeps for sorting; none for a song credited to nobody.
-fn main_artist(artist_ids: &[i32]) -> Option<i32> {
-  artist_ids.first().copied()
+    .collect::<AppResult<Vec<_>>>()?;
+  Ok((artist_ids, Some(upsert_album(conn, track, title, &owner_ids, art)?)))
 }
 
 /// Replaces the credited artists of a track with these, in this order.
@@ -676,6 +753,25 @@ fn set_credits(conn: &mut SqliteConnection, track_id: i32, artist_ids: &[i32]) -
   Ok(())
 }
 
+/// Replaces the genres of a track with these, in this order.
+fn set_genres(conn: &mut SqliteConnection, track_id: i32, genres: &[String]) -> AppResult<()> {
+  diesel::delete(track_genres::table.filter(track_genres::track_id.eq(track_id))).execute(conn)?;
+  let rows = (0..)
+    .zip(genres)
+    .map(|(position, name)| {
+      (
+        track_genres::track_id.eq(track_id),
+        track_genres::name.eq(name),
+        track_genres::position.eq(position),
+      )
+    })
+    .collect::<Vec<_>>();
+  if !rows.is_empty() {
+    diesel::insert_into(track_genres::table).values(&rows).execute(conn)?;
+  }
+  Ok(())
+}
+
 /// Drops missing tracks no playlist holds, then albums without tracks and artists credited on no track and owning no
 /// album.
 fn remove_orphans(conn: &mut SqliteConnection) -> AppResult<()> {
@@ -692,13 +788,7 @@ fn remove_orphans(conn: &mut SqliteConnection) -> AppResult<()> {
   diesel::delete(
     artists::table
       .filter(artists::id.ne_all(track_artists::table.select(track_artists::artist_id)))
-      .filter(
-        artists::id.ne_all(
-          albums::table
-            .filter(albums::artist_id.is_not_null())
-            .select(albums::artist_id.assume_not_null()),
-        ),
-      ),
+      .filter(artists::id.ne_all(album_artists::table.select(album_artists::artist_id))),
   )
   .execute(conn)?;
   Ok(())
@@ -792,7 +882,9 @@ impl PlaylistRepository for SqliteStore {
     let (name, cover): (String, Option<String>) = playlists::table
       .find(key)
       .select((playlists::name, playlists::cover))
-      .first(conn)?;
+      .first(conn)
+      .optional()?
+      .ok_or(AppError::NotFound(Missing::Playlist(id)))?;
     let name = PlaylistName::new(&name).map_err(|_| corrupt("playlist name"))?;
     let tracks = playlist_tracks::table
       .filter(playlist_tracks::playlist_id.eq(key))
@@ -825,7 +917,7 @@ impl PlaylistRepository for SqliteStore {
         ))
         .execute(conn)?;
       if renamed == 0 {
-        return Err(AppError::NotFound);
+        return Err(AppError::NotFound(Missing::Playlist(playlist.id())));
       }
       diesel::delete(playlist_tracks::table.filter(playlist_tracks::playlist_id.eq(key))).execute(conn)?;
       for part in entries.chunks(CHUNK) {
@@ -838,7 +930,7 @@ impl PlaylistRepository for SqliteStore {
   fn delete_playlist(&self, id: PlaylistId) -> AppResult<()> {
     let key = column(id.0)?;
     self.write(|conn| match diesel::delete(playlists::table.find(key)).execute(conn)? {
-      0 => Err(AppError::NotFound),
+      0 => Err(AppError::NotFound(Missing::Playlist(id))),
       _ => remove_orphans(conn),
     })
   }
@@ -850,7 +942,7 @@ impl PlaylistRepository for SqliteStore {
         .set(playlists::played_at.eq(at))
         .execute(conn)?
       {
-        0 => Err(AppError::NotFound),
+        0 => Err(AppError::NotFound(Missing::Playlist(id))),
         _ => Ok(()),
       }
     })
@@ -880,20 +972,20 @@ impl TrackIndex for SqliteStore {
       let folder_id: i32 = folders::table
         .filter(folders::path.eq(folder.display()))
         .select(folders::id)
-        .first(conn)?;
+        .first(conn)
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(Missing::FolderPath(folder.display().to_string())))?;
       for track in scanned {
         let (artist_ids, album_id) = track_owners(conn, track, AlbumArt::Fill)?;
         let row = NewTrack {
           folder_id: Some(folder_id),
           path: &track.path,
           title: &track.title,
-          artist_id: main_artist(&artist_ids),
           album_id,
           track_no: column_opt(track.track_no)?,
           disc_no: column_opt(track.disc_no)?,
           duration_ms: column(track.duration_ms)?,
           modified: track.modified,
-          genre: track.genre.as_deref(),
           cover: track.cover.as_deref(),
         };
         let track_id: i32 = diesel::insert_into(tracks::table)
@@ -904,6 +996,7 @@ impl TrackIndex for SqliteStore {
           .returning(tracks::id)
           .get_result(conn)?;
         set_credits(conn, track_id, &artist_ids)?;
+        set_genres(conn, track_id, &track.genres)?;
       }
       remove_orphans(conn)
     })
@@ -913,7 +1006,9 @@ impl TrackIndex for SqliteStore {
     let id: i32 = tracks::table
       .filter(tracks::path.eq(path))
       .select(tracks::id)
-      .first(&mut *self.conn())?;
+      .first(&mut *self.conn())
+      .optional()?
+      .ok_or_else(|| AppError::NotFound(Missing::TrackFile(path.to_owned())))?;
     Ok(TrackId(stored(id)?))
   }
 
@@ -924,18 +1019,17 @@ impl TrackIndex for SqliteStore {
         let track_id: i32 = diesel::update(tracks::table.filter(tracks::path.eq(&track.path)))
           .set((
             tracks::title.eq(&track.title),
-            tracks::artist_id.eq(main_artist(&artist_ids)),
             tracks::album_id.eq(album_id),
             tracks::track_no.eq(column_opt(track.track_no)?),
             tracks::disc_no.eq(column_opt(track.disc_no)?),
             tracks::duration_ms.eq(column(track.duration_ms)?),
             tracks::modified.eq(track.modified),
-            tracks::genre.eq(&track.genre),
             tracks::cover.eq(&track.cover),
           ))
           .returning(tracks::id)
           .get_result(conn)?;
         set_credits(conn, track_id, &artist_ids)?;
+        set_genres(conn, track_id, &track.genres)?;
       }
       remove_orphans(conn)
     })
@@ -961,9 +1055,9 @@ impl LibraryQueries for SqliteStore {
 
   fn folder(&self, id: FolderId) -> AppResult<FolderDetail> {
     let key = column(id.0)?;
-    let folder = single(self.folder_views(Some(key))?)?;
+    let folder = single(self.folder_views(Some(key))?, Missing::Folder(id))?;
     let conn = &mut *self.conn();
-    let rows = track_source()
+    let rows = library_source()
       .filter(tracks::folder_id.eq(key))
       .order(library_order())
       .select(TrackRow::as_select())
@@ -974,7 +1068,7 @@ impl LibraryQueries for SqliteStore {
 
   fn tracks(&self) -> AppResult<Vec<Track>> {
     let conn = &mut *self.conn();
-    let rows = track_source()
+    let rows = library_source()
       .filter(present())
       .select(TrackRow::as_select())
       .order(library_order())
@@ -1008,7 +1102,7 @@ impl LibraryQueries for SqliteStore {
 
   fn album(&self, id: AlbumId) -> AppResult<AlbumDetail> {
     let key = column(id.0)?;
-    let album = single(self.load_albums(AlbumScope::One(key))?)?;
+    let album = single(self.load_albums(AlbumScope::One(key))?, Missing::Album(id))?;
     let conn = &mut *self.conn();
     let rows = track_source()
       .filter(tracks::album_id.eq(key))
@@ -1025,13 +1119,13 @@ impl LibraryQueries for SqliteStore {
   }
 
   fn genres(&self) -> AppResult<Vec<Genre>> {
-    let song_count = count(tracks::id);
-    let rows: Vec<(String, i64)> = tracks::table
+    let song_count = count(track_genres::track_id);
+    let rows: Vec<(String, i64)> = track_genres::table
+      .inner_join(tracks::table)
       .filter(present())
-      .filter(tracks::genre.is_not_null())
-      .group_by(tracks::genre)
-      .select((tracks::genre.assume_not_null(), song_count))
-      .order((song_count.desc(), tracks::genre))
+      .group_by(track_genres::name)
+      .select((track_genres::name, song_count))
+      .order((song_count.desc(), track_genres::name))
       .load(&mut *self.conn())?;
     rows
       .into_iter()
@@ -1046,14 +1140,16 @@ impl LibraryQueries for SqliteStore {
 
   fn artist(&self, id: ArtistId) -> AppResult<ArtistDetail> {
     let key = column(id.0)?;
-    let artist = single(self.load_artists(Some(key))?)?;
+    let artist = single(self.load_artists(Some(key))?, Missing::Artist(id))?;
     let albums = self.load_albums(AlbumScope::ByArtist(key))?;
     let appears_on = self.load_albums(AlbumScope::AppearsOn(key))?;
     let conn = &mut *self.conn();
-    let credited = track_artists::table
-      .filter(track_artists::artist_id.eq(key))
-      .select(track_artists::track_id);
-    let rows = track_source()
+    // under its own name, as the main credit the songs are sorted by is joined from the same table
+    let credits = diesel::alias!(track_artists as credits);
+    let credited = credits
+      .filter(credits.field(track_artists::artist_id).eq(key))
+      .select(credits.field(track_artists::track_id));
+    let rows = library_source()
       .filter(tracks::id.eq_any(credited))
       .filter(present())
       .order(library_order())
@@ -1072,9 +1168,20 @@ impl LibraryQueries for SqliteStore {
     self.load_playlists(None)
   }
 
+  fn playlists_with_track(&self, track: TrackId) -> AppResult<Vec<PlaylistId>> {
+    playlist_tracks::table
+      .filter(playlist_tracks::track_id.eq(column(track.0)?))
+      .select(playlist_tracks::playlist_id)
+      .distinct()
+      .load::<i32>(&mut *self.conn())?
+      .into_iter()
+      .map(|id| Ok(PlaylistId(stored(id)?)))
+      .collect()
+  }
+
   fn playlist(&self, id: PlaylistId) -> AppResult<PlaylistDetail> {
     let key = column(id.0)?;
-    let playlist = single(self.load_playlists(Some(key))?)?;
+    let playlist = single(self.load_playlists(Some(key))?, Missing::Playlist(id))?;
     let conn = &mut *self.conn();
     let rows = playlist_tracks::table
       .inner_join(track_source())
@@ -1200,6 +1307,102 @@ impl DownloadSettingsStore for SqliteStore {
   }
 }
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = downloads)]
+struct DownloadRow {
+  id: i32,
+  request: String,
+  folder: String,
+  file_name: Option<String>,
+  state: String,
+  track_id: Option<i32>,
+  error: Option<String>,
+}
+
+/// Values of `downloads.state`.
+const DOWNLOAD_RUNNING: &str = "running";
+const DOWNLOAD_DONE: &str = "done";
+const DOWNLOAD_FAILED: &str = "failed";
+
+impl DownloadRow {
+  fn saved(self) -> AppResult<SavedDownload> {
+    let request = serde_json::from_str(&self.request).map_err(|error| AppError::Storage(error.to_string()))?;
+    let outcome = match (self.state.as_str(), self.track_id, self.error) {
+      (DOWNLOAD_DONE, Some(track), _) => Some(DownloadOutcome::Done(TrackId(stored(track)?))),
+      (DOWNLOAD_FAILED, _, Some(error)) => Some(DownloadOutcome::Failed(error)),
+      _ => None,
+    };
+    Ok(SavedDownload {
+      id: DownloadId(stored(self.id)?),
+      request,
+      folder: self.folder.into(),
+      file_name: self.file_name,
+      outcome,
+    })
+  }
+}
+
+impl DownloadStore for SqliteStore {
+  fn saved_downloads(&self) -> AppResult<Vec<SavedDownload>> {
+    let rows = downloads::table
+      .order(downloads::id)
+      .select(DownloadRow::as_select())
+      .load(&mut *self.conn())?;
+    // a row an older version wrote in a shape this one no longer reads is left out rather than hiding the others
+    Ok(
+      rows
+        .into_iter()
+        .filter_map(|row| {
+          row
+            .saved()
+            .inspect_err(|error| eprintln!("skipping a saved download: {error}"))
+            .ok()
+        })
+        .collect(),
+    )
+  }
+
+  fn add_download(&self, request: &DownloadRequest, folder: &Path) -> AppResult<DownloadId> {
+    let request = serde_json::to_string(request).map_err(|error| AppError::Storage(error.to_string()))?;
+    let id: i32 = diesel::insert_into(downloads::table)
+      .values((
+        downloads::request.eq(request),
+        downloads::folder.eq(folder.to_string_lossy()),
+        downloads::state.eq(DOWNLOAD_RUNNING),
+      ))
+      .returning(downloads::id)
+      .get_result(&mut *self.conn())?;
+    Ok(DownloadId(stored(id)?))
+  }
+
+  fn set_download_file(&self, id: DownloadId, file_name: &str) -> AppResult<()> {
+    diesel::update(downloads::table.find(column(id.0)?))
+      .set(downloads::file_name.eq(file_name))
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+
+  fn end_download(&self, id: DownloadId, outcome: &DownloadOutcome) -> AppResult<()> {
+    let (state, track_id, error) = match outcome {
+      DownloadOutcome::Done(track) => (DOWNLOAD_DONE, Some(column(track.0)?), None),
+      DownloadOutcome::Failed(error) => (DOWNLOAD_FAILED, None, Some(error.as_str())),
+    };
+    diesel::update(downloads::table.find(column(id.0)?))
+      .set((
+        downloads::state.eq(state),
+        downloads::track_id.eq(track_id),
+        downloads::error.eq(error),
+      ))
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+
+  fn remove_download(&self, id: DownloadId) -> AppResult<()> {
+    diesel::delete(downloads::table.find(column(id.0)?)).execute(&mut *self.conn())?;
+    Ok(())
+  }
+}
+
 #[derive(Queryable, Selectable, Insertable, AsChangeset)]
 #[diesel(table_name = lyrics)]
 #[diesel(treat_none_as_null = true)]
@@ -1209,28 +1412,37 @@ struct LyricsRow {
   text: Option<String>,
   lrclib_id: Option<i32>,
   length_ms: i32,
-  in_file: bool,
   checked_at: i64,
 }
 
 /// Values of `lyrics.kind`.
-const LYRICS_TEXT: &str = "text";
+const LYRICS_UNWRITTEN: &str = "unwritten";
+const LYRICS_WRITTEN: &str = "written";
 const LYRICS_INSTRUMENTAL: &str = "instrumental";
 const LYRICS_MISSING: &str = "missing";
 
+/// The LRCLIB record lyrics came from, kept in `lyrics.lrclib_id`; none for lyrics of the file itself.
+fn lrclib_id(origin: LyricsOrigin) -> AppResult<Option<i32>> {
+  match origin {
+    LyricsOrigin::File => Ok(None),
+    LyricsOrigin::Lrclib { id } => Ok(Some(column(id)?)),
+  }
+}
+
+fn lyrics_origin(lrclib_id: Option<i32>) -> AppResult<LyricsOrigin> {
+  Ok(match lrclib_id {
+    Some(id) => LyricsOrigin::Lrclib { id: stored(id)? },
+    None => LyricsOrigin::File,
+  })
+}
+
 impl LyricsRow {
   fn new(track_id: i32, record: &LyricsRecord) -> AppResult<Self> {
-    let (kind, text, lrclib_id) = match &record.find {
-      LyricsFind::Text { text, origin } => (
-        LYRICS_TEXT,
-        Some(text.clone()),
-        match origin {
-          LyricsOrigin::File => None,
-          LyricsOrigin::Lrclib { id } => Some(column(*id)?),
-        },
-      ),
-      LyricsFind::Instrumental => (LYRICS_INSTRUMENTAL, None, None),
-      LyricsFind::Missing => (LYRICS_MISSING, None, None),
+    let (kind, text, lrclib_id) = match &record.state {
+      LyricsState::Unwritten { text, origin } => (LYRICS_UNWRITTEN, Some(text.clone()), lrclib_id(*origin)?),
+      LyricsState::Written { origin } => (LYRICS_WRITTEN, None, lrclib_id(*origin)?),
+      LyricsState::Instrumental => (LYRICS_INSTRUMENTAL, None, None),
+      LyricsState::Missing => (LYRICS_MISSING, None, None),
     };
     Ok(Self {
       track_id,
@@ -1238,27 +1450,25 @@ impl LyricsRow {
       text,
       lrclib_id,
       length_ms: column(record.length_ms)?,
-      in_file: record.in_file,
       checked_at: record.checked_at,
     })
   }
 
   fn record(self) -> AppResult<LyricsRecord> {
-    let find = match (self.kind.as_str(), self.text) {
-      (LYRICS_TEXT, Some(text)) => LyricsFind::Text {
+    let state = match (self.kind.as_str(), self.text) {
+      (LYRICS_UNWRITTEN, Some(text)) => LyricsState::Unwritten {
         text,
-        origin: match self.lrclib_id {
-          Some(id) => LyricsOrigin::Lrclib { id: stored(id)? },
-          None => LyricsOrigin::File,
-        },
+        origin: lyrics_origin(self.lrclib_id)?,
       },
-      (LYRICS_INSTRUMENTAL, _) => LyricsFind::Instrumental,
-      _ => LyricsFind::Missing,
+      (LYRICS_WRITTEN, _) => LyricsState::Written {
+        origin: lyrics_origin(self.lrclib_id)?,
+      },
+      (LYRICS_INSTRUMENTAL, _) => LyricsState::Instrumental,
+      _ => LyricsState::Missing,
     };
     Ok(LyricsRecord {
-      find,
+      state,
       length_ms: stored(self.length_ms)?,
-      in_file: self.in_file,
       checked_at: self.checked_at,
     })
   }
@@ -1289,8 +1499,7 @@ impl LyricsStore for SqliteStore {
   fn unwritten_lyrics(&self) -> AppResult<Vec<UnwrittenLyrics>> {
     let rows: Vec<(i32, String, Option<String>)> = lyrics::table
       .inner_join(tracks::table)
-      .filter(lyrics::kind.eq(LYRICS_TEXT))
-      .filter(lyrics::in_file.eq(false))
+      .filter(lyrics::kind.eq(LYRICS_UNWRITTEN))
       .filter(present())
       .select((lyrics::track_id, tracks::path, lyrics::text))
       .load(&mut *self.conn())?;
@@ -1309,7 +1518,8 @@ impl LyricsStore for SqliteStore {
 
   fn mark_lyrics_written(&self, track: TrackId) -> AppResult<()> {
     diesel::update(lyrics::table.find(column(track.0)?))
-      .set(lyrics::in_file.eq(true))
+      // the file holds the text now, so only where it came from is kept
+      .set((lyrics::kind.eq(LYRICS_WRITTEN), lyrics::text.eq(None::<String>)))
       .execute(&mut *self.conn())?;
     Ok(())
   }
@@ -1327,11 +1537,12 @@ mod tests {
       title: title.into(),
       artists: Some(Artists::new(["Artist"]).unwrap()),
       album: Some("Album".into()),
-      album_artist: Some("Artist".into()),
+      album_artists: Some(Artists::new(["Artist"]).unwrap()),
       year: None,
+      release_type: None,
       track_no: None,
       disc_no: None,
-      genre: None,
+      genres: Vec::new(),
       duration_ms: 1000,
       modified: 1,
       cover: None,
@@ -1398,7 +1609,7 @@ mod tests {
     let path = folder.as_path().join("duet.mp3").to_string_lossy().into_owned();
     let duet = ScannedTrack {
       artists: Some(Artists::new(["Host", "Guest"]).unwrap()),
-      album_artist: Some("Host".into()),
+      album_artists: Some(Artists::new(["Host"]).unwrap()),
       ..scanned(&path, "Duet")
     };
     store.index_tracks(&folder, &[duet]).unwrap();
@@ -1414,7 +1625,7 @@ mod tests {
 
     let solo = ScannedTrack {
       artists: Some(Artists::new(["Host"]).unwrap()),
-      album_artist: Some("Host".into()),
+      album_artists: Some(Artists::new(["Host"]).unwrap()),
       ..scanned(&path, "Duet")
     };
     store.retag_tracks(&[solo]).unwrap();
@@ -1458,6 +1669,40 @@ mod tests {
         ..session
       })
     );
+  }
+
+  #[test]
+  fn downloads_are_kept_until_removed() {
+    use crate::domain::download::AudioQuality;
+    let store = SqliteStore::in_memory().unwrap();
+    let request = DownloadRequest {
+      video_url: "https://www.youtube.com/watch?v=abc".into(),
+      cover: None,
+      title: "A Lot".into(),
+      artists: vec!["21 Savage".into()],
+      album: None,
+      year: Some(2018),
+      quality: AudioQuality::Original,
+      folder: None,
+      playlist_ids: vec![PlaylistId(4)],
+    };
+    let running = store.add_download(&request, Path::new("C:/Music")).unwrap();
+    let failed = store.add_download(&request, Path::new("C:/Music")).unwrap();
+    store.set_download_file(running, "21 Savage - A Lot.m4a").unwrap();
+    store
+      .end_download(failed, &DownloadOutcome::Failed("no network".into()))
+      .unwrap();
+
+    let saved = store.saved_downloads().unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[0].id, running);
+    assert_eq!(saved[0].file_name.as_deref(), Some("21 Savage - A Lot.m4a"));
+    assert!(saved[0].outcome.is_none());
+    assert_eq!(saved[0].request.playlist_ids, [PlaylistId(4)]);
+    assert!(matches!(&saved[1].outcome, Some(DownloadOutcome::Failed(error)) if error == "no network"));
+
+    store.remove_download(failed).unwrap();
+    assert_eq!(store.saved_downloads().unwrap().len(), 1);
   }
 
   #[test]
@@ -1507,7 +1752,7 @@ mod tests {
       .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
       .unwrap();
     let song = |file: &str, genre: Option<&str>| ScannedTrack {
-      genre: genre.map(Into::into),
+      genres: genre.into_iter().map(Into::into).collect(),
       ..scanned(&folder.as_path().join(file).to_string_lossy(), file)
     };
     let songs = [
@@ -1575,7 +1820,7 @@ mod tests {
     let nameless = |file: &str| ScannedTrack {
       artists: None,
       album: Some("Tape".into()),
-      album_artist: None,
+      album_artists: None,
       ..scanned(&path(file), file)
     };
     let songs = [nameless("a.mp3"), nameless("b.mp3"), scanned(&path("c.mp3"), "c")];
@@ -1587,10 +1832,7 @@ mod tests {
     assert_eq!(artists.len(), 1);
     let albums = store.albums().unwrap();
     let tape = albums.iter().find(|album| album.title == "Tape").unwrap();
-    assert_eq!(
-      (tape.artist_id, tape.artist.as_deref(), tape.track_count),
-      (None, None, 2)
-    );
+    assert_eq!((tape.artists.is_empty(), tape.track_count), (true, 2));
     let tracks = store.tracks().unwrap();
     assert_eq!(tracks.last().map(|track| track.title.as_str()), Some("b.mp3"));
     assert!(
@@ -1599,6 +1841,49 @@ mod tests {
         .filter(|track| track.title != "c")
         .all(|track| track.artists.is_empty())
     );
+  }
+
+  #[test]
+  fn joint_albums_belong_to_each_of_their_artists() {
+    let store = SqliteStore::in_memory().unwrap();
+    let folder = FolderPath::new(if cfg!(windows) { r"C:\Music" } else { "/music" }).unwrap();
+    store
+      .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
+      .unwrap();
+    let path = |file: &str| folder.as_path().join(file).to_string_lossy().into_owned();
+    let joint = |file: &str, owners: [&str; 2]| ScannedTrack {
+      album: Some("Throne".into()),
+      album_artists: Some(Artists::new(owners).unwrap()),
+      release_type: Some(ReleaseType::Ep),
+      genres: vec!["Rap".into(), "Soul".into()],
+      ..scanned(&path(file), file)
+    };
+    let songs = [
+      joint("a.mp3", ["Jay", "Ye"]),
+      joint("b.mp3", ["Jay", "Ye"]),
+      joint("c.mp3", ["Ye", "Jay"]),
+    ];
+    store.index_tracks(&folder, &songs).unwrap();
+
+    // the same artists in another order lead another album
+    let albums = store.albums().unwrap();
+    assert_eq!(albums.len(), 2);
+    let throne = albums.iter().find(|album| album.track_count == 2).unwrap();
+    let owners: Vec<&str> = throne.artists.iter().map(|artist| artist.name.as_str()).collect();
+    assert_eq!(
+      (owners, throne.release_type),
+      (vec!["Jay", "Ye"], Some(ReleaseType::Ep))
+    );
+    for owner in &throne.artists {
+      assert_eq!(store.artist(owner.id).unwrap().albums.len(), 2);
+    }
+    let genres: Vec<(String, u32)> = store
+      .genres()
+      .unwrap()
+      .into_iter()
+      .map(|genre| (genre.name, genre.track_count))
+      .collect();
+    assert_eq!(genres, [("Rap".into(), 3), ("Soul".into(), 3)]);
   }
 
   /// Opens a copy of a real library named by `AIO_DB`, which migrates it, and prints what became of its songs.

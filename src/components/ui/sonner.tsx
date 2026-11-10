@@ -1,8 +1,9 @@
 import type { CSSProperties } from 'react'
 import { Toaster as Sonner, type ToasterProps } from 'sonner'
 
-/** Theme variables of sonner mapped onto the app tokens. */
+/** Theme variables of sonner mapped onto the app tokens, and the app's font, which sonner's own stylesheet replaces with the system one. */
 const style = {
+  fontFamily: 'inherit',
   '--normal-bg': 'var(--popover)',
   '--normal-text': 'var(--popover-foreground)',
   '--normal-border': 'var(--border)',

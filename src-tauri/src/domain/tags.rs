@@ -1,10 +1,11 @@
-//! Tags of a song file and who owns them: a song owns its title, artists, numbers and genre, while the cover and the
-//! year belong to its album, so every song of one album carries the same ones.
+//! Tags of a song file and who owns them: a song owns its title, artists, numbers, genres, writers and comment, while
+//! the album artists, the cover, the year and the release type belong to its album, so every song of one album
+//! carries the same ones.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use super::artists::Artists;
+use super::artists::{Artists, distinct};
 
 /// Words that rippers and players write into a tag they know nothing about, such as `Неизв. исполнитель` in the
 /// album artist of a ripped CD, compared in lower case.
@@ -40,18 +41,51 @@ pub enum TagError {
   NumberInvalid { max: u32 },
 }
 
+/// What kind of release an album is, as MusicBrainz sorts them; the artist page lists albums apart from singles and
+/// EPs by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReleaseType {
+  Album,
+  Single,
+  Ep,
+}
+
+impl ReleaseType {
+  pub const ALL: [Self; 3] = [Self::Album, Self::Single, Self::Ep];
+
+  /// The word MusicBrainz and the taggers that follow it write into a file, which the library stores as well.
+  pub fn tag(self) -> &'static str {
+    match self {
+      Self::Album => "album",
+      Self::Single => "single",
+      Self::Ep => "ep",
+    }
+  }
+
+  /// The type one value of the tag names, in any case; secondary types such as `compilation` name none.
+  pub fn parse(value: &str) -> Option<Self> {
+    let value = value.trim().to_lowercase();
+    Self::ALL.into_iter().find(|kind| kind.tag() == value)
+  }
+}
+
 /// Tags written into a song file; blank text means no tag, and a song without a title or artist is listed under its
 /// file name and credited to nobody.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SongTags {
   title: Option<String>,
   artists: Option<Artists>,
-  album_artist: Option<String>,
+  album_artists: Option<Artists>,
   album: Option<String>,
   year: Option<u16>,
+  release_type: Option<ReleaseType>,
   track_no: Option<u32>,
   disc_no: Option<u32>,
-  genre: Option<String>,
+  genres: Vec<String>,
+  composers: Vec<String>,
+  lyricists: Vec<String>,
+  comment: Option<String>,
 }
 
 /// Trimmed text, or nothing when it is blank.
@@ -85,12 +119,16 @@ impl SongTags {
     Ok(Self {
       title: text(Some(title)),
       artists,
-      album_artist: None,
+      album_artists: None,
       album: text(album),
       year,
+      release_type: None,
       track_no: None,
       disc_no: None,
-      genre: None,
+      genres: Vec::new(),
+      composers: Vec::new(),
+      lyricists: Vec::new(),
+      comment: None,
     })
   }
 
@@ -107,17 +145,43 @@ impl SongTags {
     })
   }
 
-  pub fn with_genre(self, genre: Option<&str>) -> Self {
+  pub fn with_genres<S: AsRef<str>>(self, genres: impl IntoIterator<Item = S>) -> Self {
     Self {
-      genre: text(genre),
+      genres: distinct(genres),
       ..self
     }
   }
 
-  /// The same tags with an album artist other than the song's main artist, as compilations and features have.
-  pub fn with_album_artist(self, album_artist: Option<&str>) -> Self {
-    let album_artist = text(album_artist).filter(|name| Some(name.as_str()) != self.main_artist());
-    Self { album_artist, ..self }
+  /// The same tags with the people who wrote the music and the words.
+  pub fn with_writers<S: AsRef<str>>(
+    self,
+    composers: impl IntoIterator<Item = S>,
+    lyricists: impl IntoIterator<Item = S>,
+  ) -> Self {
+    Self {
+      composers: distinct(composers),
+      lyricists: distinct(lyricists),
+      ..self
+    }
+  }
+
+  pub fn with_comment(self, comment: Option<&str>) -> Self {
+    Self {
+      comment: text(comment),
+      ..self
+    }
+  }
+
+  /// The same tags with album artists other than the song's main artist alone, as compilations and joint albums
+  /// have.
+  pub fn with_album_artists(self, album_artists: Option<Artists>) -> Self {
+    let album_artists = own_album_artists(album_artists.as_ref(), self.main_artist()).cloned();
+    Self { album_artists, ..self }
+  }
+
+  /// The same tags with the album's release type, which every song of the album shares.
+  pub fn with_release_type(self, release_type: Option<ReleaseType>) -> Self {
+    Self { release_type, ..self }
   }
 
   /// The same tags with the album's year, which wins over the song's own.
@@ -138,9 +202,9 @@ impl SongTags {
     self.artists.as_ref().map(Artists::main)
   }
 
-  /// The album artist written only when it differs from the main artist.
-  pub fn album_artist(&self) -> Option<&str> {
-    self.album_artist.as_deref()
+  /// The album artists, written only when they are not the main artist alone.
+  pub fn album_artists(&self) -> Option<&Artists> {
+    self.album_artists.as_ref()
   }
 
   pub fn album(&self) -> Option<&str> {
@@ -151,6 +215,10 @@ impl SongTags {
     self.year
   }
 
+  pub fn release_type(&self) -> Option<ReleaseType> {
+    self.release_type
+  }
+
   pub fn track_no(&self) -> Option<u32> {
     self.track_no
   }
@@ -159,14 +227,35 @@ impl SongTags {
     self.disc_no
   }
 
-  pub fn genre(&self) -> Option<&str> {
-    self.genre.as_deref()
+  pub fn genres(&self) -> &[String] {
+    &self.genres
   }
 
-  /// Title and artist of the album the library files the song under, the pair that identifies an album; a song that
-  /// names no album is on none, and an album whose song names no artist belongs to nobody.
-  pub fn album_key(&self) -> Option<(&str, Option<&str>)> {
-    Some((self.album()?, self.album_artist().or(self.main_artist())))
+  pub fn composers(&self) -> &[String] {
+    &self.composers
+  }
+
+  pub fn lyricists(&self) -> &[String] {
+    &self.lyricists
+  }
+
+  pub fn comment(&self) -> Option<&str> {
+    self.comment.as_deref()
+  }
+
+  /// Whose the song's album is: its album artists, or else its main artist; nobody's when it names no artist.
+  pub fn album_owners(&self) -> &[String] {
+    match (&self.album_artists, &self.artists) {
+      (Some(owners), _) => owners.names(),
+      (None, Some(artists)) => &artists.names()[..1],
+      (None, None) => &[],
+    }
+  }
+
+  /// Title and artists of the album the library files the song under, the pair that identifies an album; a song
+  /// that names no album is on none.
+  pub fn album_key(&self) -> Option<(&str, &[String])> {
+    Some((self.album()?, self.album_owners()))
   }
 
   /// "Artists - Title", or the title alone when no artist is credited, with the characters Windows forbids in file
@@ -191,6 +280,11 @@ impl SongTags {
       .collect();
     cleaned.trim_end_matches(['.', ' ']).to_owned()
   }
+}
+
+/// The album artists a song names apart from its main artist `main`: the main artist alone names none.
+pub fn own_album_artists<'a>(album_artists: Option<&'a Artists>, main: Option<&str>) -> Option<&'a Artists> {
+  album_artists.filter(|owners| !(owners.names().len() == 1 && Some(owners.main()) == main))
 }
 
 /// Where an edited song ends up, which decides whose cover and year it carries afterwards.
@@ -258,17 +352,27 @@ mod tests {
     let tags = SongTags::new("x", by(&["Artist", "Guest"]), None, None).unwrap();
     assert_eq!(tags.album_key(), None);
     let tags = SongTags::new("x", by(&["Artist", "Guest"]), Some("Hits"), None).unwrap();
-    assert_eq!(tags.album_key(), Some(("Hits", Some("Artist"))));
+    assert_eq!(tags.album_key(), Some(("Hits", &["Artist".to_owned()][..])));
     let nobody = SongTags::edited("x", None, Some("Tape"), None).unwrap();
-    assert_eq!(nobody.album_key(), Some(("Tape", None)));
+    assert_eq!(nobody.album_key(), Some(("Tape", &[][..])));
     let tags = SongTags::new("x", by(&["Artist"]), Some("Hits"), None)
       .unwrap()
-      .with_album_artist(Some("Various"));
-    assert_eq!(tags.album_key(), Some(("Hits", Some("Various"))));
+      .with_album_artists(Some(by(&["Jay", "Ye"])));
+    assert_eq!(
+      tags.album_key(),
+      Some(("Hits", &["Jay".to_owned(), "Ye".to_owned()][..]))
+    );
     let same = SongTags::new("x", by(&["Artist", "Guest"]), None, None)
       .unwrap()
-      .with_album_artist(Some("Artist"));
-    assert_eq!(same.album_artist(), None);
+      .with_album_artists(Some(by(&["Artist"])));
+    assert_eq!(same.album_artists(), None);
+  }
+
+  #[test]
+  fn release_types_read_the_musicbrainz_words() {
+    assert_eq!(ReleaseType::parse(" EP "), Some(ReleaseType::Ep));
+    assert_eq!(ReleaseType::parse("single"), Some(ReleaseType::Single));
+    assert_eq!(ReleaseType::parse("compilation"), None);
   }
 
   #[test]

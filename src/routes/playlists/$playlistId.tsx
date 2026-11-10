@@ -5,14 +5,13 @@ import { useState } from 'react'
 import { Cover } from '@/components/cover'
 import { DownloadDialog } from '@/components/download-dialog'
 import { EmptyState } from '@/components/empty-state'
-import { MetaDot, PageHeader } from '@/components/page-header'
+import { MetaStat, MetaStats, PageHeader } from '@/components/page-header'
 import { PinButton } from '@/components/pin-controls'
 import { PlayButton } from '@/components/play-button'
 import { type PlaylistDialog, PlaylistDialogs } from '@/components/playlist-dialogs'
 import { TrackTable } from '@/components/track-table'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { formatLength, plural } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
 
@@ -40,9 +39,10 @@ function PlaylistPage() {
         onTitleClick={() => setDialog('edit')}
         meta={
           <>
-            <span>{plural(playlist.trackCount, 'song')}</span>
-            {playlist.trackCount > 0 && <MetaDot />}
-            {playlist.trackCount > 0 && <span>{formatLength(playlist.durationMs)}</span>}
+            <MetaStats>
+              <MetaStat kind="songs" value={playlist.trackCount} />
+              {playlist.trackCount > 0 && <MetaStat kind="length" value={playlist.durationMs} />}
+            </MetaStats>
           </>
         }
       >

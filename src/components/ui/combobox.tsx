@@ -1,5 +1,6 @@
 import { type ComponentProps, type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { ClearButton } from '@/components/ui/clear-button'
+import { FieldLabel, type FieldLabelProps } from '@/components/ui/field-label'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -10,6 +11,8 @@ type Option = { key: string | number; label: string; subtitle?: string; art?: Re
 /** Text field with its label above it that suggests existing values as you type; picking one fills the field. */
 export function Combobox<const O extends Option>({
   label,
+  icon,
+  hint,
   value,
   onValueChange,
   options,
@@ -20,18 +23,19 @@ export function Combobox<const O extends Option>({
   onBlur: onFieldBlur,
   children,
   ...props
-}: Omit<ComponentProps<typeof Input>, 'value' | 'onChange'> & {
-  label: string
-  value: string
-  onValueChange: (value: string) => void
-  /** Suggestions for the current text, best first. */
-  options: readonly O[]
-  onPick: (option: O) => void
-  /** Artwork of the existing item the text names, shown inside the field at its start. */
-  art?: ReactNode
-  /** Shown under the field, such as the values already picked. */
-  children?: ReactNode
-}) {
+}: Omit<ComponentProps<typeof Input>, 'value' | 'onChange'> &
+  FieldLabelProps & {
+    label: string
+    value: string
+    onValueChange: (value: string) => void
+    /** Suggestions for the current text, best first. */
+    options: readonly O[]
+    onPick: (option: O) => void
+    /** Artwork of the existing item the text names, shown inside the field at its start. */
+    art?: ReactNode
+    /** Shown under the field, such as the values already picked. */
+    children?: ReactNode
+  }) {
   const id = useId()
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
@@ -72,9 +76,9 @@ export function Combobox<const O extends Option>({
 
   return (
     <div className={cn('flex flex-col gap-1.5', className)}>
-      <label htmlFor={id} className="text-sm font-semibold text-muted-foreground">
+      <FieldLabel htmlFor={id} icon={icon} hint={hint}>
         {label}
-      </label>
+      </FieldLabel>
       <Popover open={shown} onOpenChange={setOpen}>
         <PopoverAnchor asChild>
           <div ref={anchorRef} className="relative flex items-center">

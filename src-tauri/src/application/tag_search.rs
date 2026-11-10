@@ -5,7 +5,7 @@ use std::thread;
 use serde::Deserialize;
 use specta::Type;
 
-use super::error::{AppError, AppResult};
+use super::error::{AppError, AppResult, Missing};
 use super::ports::{CoverImages, LibraryQueries, SongLookup, TagFinder, WebImages};
 use super::views::{TagMatch, TagSearch, TagSource};
 use crate::domain::ids::TrackId;
@@ -54,7 +54,7 @@ impl TagSearchService {
       .tracks_by_ids(&[id])?
       .into_iter()
       .next()
-      .ok_or(AppError::NotFound)?;
+      .ok_or(AppError::NotFound(Missing::Track(id)))?;
     let path = Path::new(&track.path);
     let stem = path
       .file_stem()

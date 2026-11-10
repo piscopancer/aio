@@ -1,12 +1,11 @@
 //! AcoustID, which recognises a recording by the fingerprint of its sound, so it finds songs whose file names and
 //! tags say nothing; it names them as MusicBrainz does.
 
-use std::fs::File;
 use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rodio::{Decoder, Source};
+use rodio::Source;
 use rusty_chromaprint::{Configuration, FingerprintCompressor, Fingerprinter};
 use serde::Deserialize;
 
@@ -14,6 +13,7 @@ use super::{RESULTS, ReadJson, agent, release_group_cover};
 use crate::application::error::{AppError, AppResult};
 use crate::application::ports::{SongLookup, TagFinder};
 use crate::application::views::{TagMatch, TagSource};
+use crate::infrastructure::opus;
 use crate::infrastructure::tools::fetch_error;
 
 const API: &str = "https://api.acoustid.org/v2/lookup";
@@ -125,8 +125,7 @@ impl Recording {
 /// The Chromaprint fingerprint of the start of the song at `path`, compressed and encoded as AcoustID takes it.
 fn fingerprint(path: &Path) -> AppResult<String> {
   let unreadable = |error: &dyn std::fmt::Display| AppError::Audio(format!("{}: {error}", path.display()));
-  let file = File::open(path).map_err(|e| unreadable(&e))?;
-  let decoder = Decoder::try_from(file).map_err(|e| unreadable(&e))?;
+  let decoder = opus::open(path).map_err(|e| unreadable(&e))?;
   let (rate, channels) = (decoder.sample_rate().get(), decoder.channels().get());
   let config = Configuration::preset_test2();
   let mut printer = Fingerprinter::new(&config);

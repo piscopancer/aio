@@ -21,6 +21,6 @@ id!(
   PlaylistId,
   /// A folder of the library.
   FolderId,
-  /// One download started in this session.
+  /// One download of the list, kept across launches until it is dismissed.
   DownloadId,
 );

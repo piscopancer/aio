@@ -2,17 +2,47 @@ import type {
   AppError,
   DownloadError,
   LibraryError,
+  Missing,
   PinError,
   PlaybackError,
   PlaylistError,
   TagError,
 } from '@/bindings'
+import { commands as bindings } from '@/bindings'
 
-/** A rejected backend command, carrying the typed reason next to a readable message. */
+/** A backend command as it was called: its name in the bindings and the arguments it got. */
+export type CommandCall = { readonly command: keyof typeof bindings; readonly args: readonly unknown[] }
+
+/** The call each settled command result came from, so that a failure can tell what was asked. */
+const calls = new WeakMap<object, CommandCall>()
+
+const isCommand = (key: PropertyKey): key is keyof typeof bindings => typeof key === 'string' && key in bindings
+
+/** The backend commands of the bindings, each noting the call its result or rejection came from. */
+export const commands = new Proxy(bindings, {
+  get(target, key, receiver) {
+    const command: unknown = Reflect.get(target, key, receiver)
+    if (typeof command !== 'function' || !isCommand(key)) return command
+    return (...args: unknown[]) => {
+      const result: unknown = command(...args)
+      const note = (settled: unknown) => {
+        if (typeof settled === 'object' && settled !== null) calls.set(settled, { command: key, args })
+      }
+      // noted before any caller's own handlers run, since those are attached to the same promise later
+      if (result instanceof Promise) result.then(note, note)
+      return result
+    }
+  },
+})
+
+/** A rejected backend command, carrying the typed reason next to a readable message, and the call when it is known. */
 export class CommandError extends Error {
   override readonly name = 'CommandError'
 
-  constructor(readonly error: AppError) {
+  constructor(
+    readonly error: AppError,
+    readonly call: CommandCall | null = null,
+  ) {
     super(errorMessage(error))
   }
 }
@@ -23,8 +53,31 @@ type CommandResult = { status: 'ok'; data: unknown } | { status: 'error'; error:
 /** Returns the data of a fallible command or throws its error as a `CommandError`. */
 export async function unwrap<const R extends CommandResult>(result: Promise<R>) {
   const settled = await result
-  if (settled.status === 'error') throw new CommandError(settled.error)
+  if (settled.status === 'error') throw new CommandError(settled.error, calls.get(settled) ?? null)
   return settled.data as Extract<R, { status: 'ok' }>['data'] // narrowing a generic union by its tag does not reach the type parameter
+}
+
+function missingMessage(missing: Missing) {
+  switch (missing.kind) {
+    case 'track':
+      return 'This song is no longer in the library'
+    case 'trackFile':
+      return `${missing.key} is not in the library`
+    case 'album':
+      return 'This album is no longer in the library'
+    case 'artist':
+      return 'This artist is no longer in the library'
+    case 'playlist':
+      return 'This playlist no longer exists'
+    case 'folder':
+      return 'This folder is no longer in the library'
+    case 'folderPath':
+      return `${missing.key} is not a library folder`
+    case 'record':
+      return 'A stored record is missing'
+    default:
+      return missing satisfies never
+  }
 }
 
 function libraryMessage(reason: LibraryError) {
@@ -127,7 +180,7 @@ export function errorMessage(error: AppError) {
     case 'fetch':
       return error.reason
     case 'notFound':
-      return 'Not found'
+      return missingMessage(error.reason)
     case 'storage':
       return `Storage failed: ${error.reason}`
     case 'audio':

@@ -1,7 +1,6 @@
 import { MutationCache, QueryCache, QueryClient, mutationOptions, queryOptions } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
-import { toast } from 'sonner'
 import {
   type AlbumId,
   type ArtistId,
@@ -15,10 +14,11 @@ import {
   type TagSearchQuery,
   type TrackEdit,
   type TrackId,
-  commands,
 } from '@/bindings'
+import { toast } from 'sonner'
+import { reportError } from '@/lib/errors'
 import { plural } from '@/lib/format'
-import { type CommandError, unwrap } from '@/lib/ipc'
+import { type CommandError, commands, unwrap } from '@/lib/ipc'
 
 declare module '@tanstack/react-query' {
   interface Register {
@@ -33,10 +33,10 @@ export const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: Infinity, retry: false } },
   queryCache: new QueryCache({
     onError: (error, query) => {
-      if (query.meta?.inline !== true) toast.error(error.message)
+      if (query.meta?.inline !== true) reportError(error)
     },
   }),
-  mutationCache: new MutationCache({ onError: (error) => toast.error(error.message) }),
+  mutationCache: new MutationCache({ onError: (error) => reportError(error) }),
 })
 
 /** Key roots; the library root covers every view a scan can change, playlists included. */
@@ -65,6 +65,12 @@ export const queries = {
   playlists: () => queryOptions({ queryKey: [...roots.playlists], queryFn: () => unwrap(commands.listPlaylists()) }),
   playlist: (id: PlaylistId) =>
     queryOptions({ queryKey: [...roots.playlists, id], queryFn: () => unwrap(commands.getPlaylist(id)) }),
+  /** The playlists that already hold the song; under the playlists root, so adding or removing songs refetches it. */
+  playlistsWithTrack: (trackId: TrackId) =>
+    queryOptions({
+      queryKey: [...roots.playlists, 'withTrack', trackId],
+      queryFn: () => unwrap(commands.playlistsWithTrack(trackId)),
+    }),
   /** Every download of the session; `DownloadsChanged` events replace it. */
   downloads: () => queryOptions({ queryKey: [...roots.downloads, 'list'], queryFn: () => commands.listDownloads() }),
   /** Versions of the download tools; `ToolsChanged` events replace it. */
@@ -94,15 +100,7 @@ export const queries = {
       queryFn: () => readText().catch(() => null),
       staleTime: 0,
     }),
-  /** The colour that covers most of a cover image, which a page header glows with; a missing image gives no colour. */
-  coverColor: (file: string | null) =>
-    queryOptions({
-      queryKey: ['coverColor', file],
-      queryFn: () => (file === null ? null : unwrap(commands.coverColor(file))),
-      meta: { inline: true },
-    }),
-  /** A few harmonious dark colours of a cover image, strongest first, which the lyrics background flows with; a
-   * missing image gives none. */
+  /** A few harmonious dark colours of a cover image, strongest first, which the lyrics background and the page headers flow with; a missing image gives none. */
   coverPalette: (file: string | null) =>
     queryOptions({
       queryKey: ['coverPalette', file],

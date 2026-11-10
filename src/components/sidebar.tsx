@@ -5,11 +5,13 @@ import {
   CheckIcon,
   LibraryIcon,
   Music2Icon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   PlusIcon,
   SearchIcon,
   Volume2Icon,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { PlaybackContext, Playlist } from '@/bindings'
 import { Cover } from '@/components/cover'
 import { Hint } from '@/components/hint'
@@ -20,8 +22,10 @@ import { PlayButton } from '@/components/play-button'
 import { PlaylistMenu } from '@/components/playlist-menu'
 import { Button } from '@/components/ui/button'
 import { ClearButton } from '@/components/ui/clear-button'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Shortcut } from '@/components/ui/shortcut'
 import { carriesTrack, droppedTrack } from '@/lib/dnd'
 import {
   PLAYLIST_ORDERS,
@@ -31,9 +35,10 @@ import {
   toggleSidebar,
   useLayout,
 } from '@/lib/layout'
-import { useIsPlayingFrom } from '@/lib/player'
+import { player, useIsPlayingFrom } from '@/lib/player'
 import { mutations, queries } from '@/lib/query'
-import { PIN_IDLE, pinDropMarks, splitPinned, usePinReorder } from '@/lib/pins'
+import { PIN_IDLE, pinDropMarks, usePinReorder } from '@/lib/pins'
+import { ORDERS, inListOrder } from '@/lib/playlists'
 import { matcher } from '@/lib/search'
 import { cn } from '@/lib/utils'
 
@@ -46,60 +51,89 @@ export function Sidebar() {
   )
 }
 
+/** What switching the column does from its current width, in the hint of the column's button and in its menu. */
+const toggleLabel = (compact: boolean) => `${compact ? 'Expand' : 'Collapse'} playlists`
+
+/** The playlists column; right-clicking its empty space opens a menu that creates a playlist or switches the width. */
 function Library() {
   const { data: playlists = [] } = useQuery(queries.playlists())
   const [creating, setCreating] = useState(false)
+  // while the menu is open it holds the focus, so a dialog opened from it waits until it has closed
+  const createOnClose = useRef(false)
   const compact = useLayout((state) => state.sidebarCompact)
   const order = useLayout((state) => state.playlistOrder)
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col rounded-lg bg-surface">
-      <header
-        className={cn('flex items-center gap-2 pt-4 pb-2 text-muted-foreground', compact ? 'flex-col px-2' : 'px-4')}
-      >
-        <Hint label={`${compact ? 'Expand' : 'Collapse'} playlists`} keys={SIDEBAR_KEYS} side="right">
-          <Button
-            variant="ghost"
-            className={cn('h-10 gap-3 px-2 hover:bg-surface-hover [&_svg]:size-6', compact && 'w-10 px-0')}
-            onClick={toggleSidebar}
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <section className="flex min-h-0 flex-1 flex-col rounded-lg bg-surface">
+            <header
+              className={cn(
+                'flex items-center gap-2 pt-4 pb-2 text-muted-foreground',
+                compact ? 'flex-col px-2' : 'px-4',
+              )}
+            >
+              <Hint label={toggleLabel(compact)} keys={SIDEBAR_KEYS} side="right">
+                <Button
+                  variant="ghost"
+                  className={cn('h-10 gap-3 px-2 hover:bg-surface-hover [&_svg]:size-6', compact && 'w-10 px-0')}
+                  onClick={toggleSidebar}
+                >
+                  <LibraryIcon />
+                  {!compact && <span className="text-base font-semibold">Playlists</span>}
+                </Button>
+              </Hint>
+              <Hint label="Create playlist" side="right">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn('hover:bg-surface-hover', !compact && 'ml-auto')}
+                  onClick={() => setCreating(true)}
+                >
+                  <PlusIcon className="size-5" />
+                </Button>
+              </Hint>
+            </header>
+            {compact ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
+                <PlaylistRows playlists={playlists} order={order} compact reorderable />
+              </div>
+            ) : (
+              // mounted anew when the column widens again, so the search starts empty
+              <PlaylistList playlists={playlists} order={order} />
+            )}
+          </section>
+        </ContextMenuTrigger>
+        <ContextMenuContent
+          onCloseAutoFocus={(event) => {
+            if (!createOnClose.current) return
+            createOnClose.current = false
+            // the dialog takes the focus instead of the column the menu would hand it back to
+            event.preventDefault()
+            setCreating(true)
+          }}
+        >
+          <ContextMenuItem
+            onSelect={() => {
+              createOnClose.current = true
+            }}
           >
-            <LibraryIcon />
-            {!compact && <span className="text-base font-semibold">Playlists</span>}
-          </Button>
-        </Hint>
-        <Hint label="Create playlist" side="right">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn('hover:bg-surface-hover', !compact && 'ml-auto')}
-            onClick={() => setCreating(true)}
-          >
-            <PlusIcon className="size-5" />
-          </Button>
-        </Hint>
-        <CreatePlaylistDialog open={creating} onOpenChange={setCreating} />
-      </header>
-      {compact ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
-          <PlaylistRows playlists={playlists} order={order} compact reorderable />
-        </div>
-      ) : (
-        // mounted anew when the column widens again, so the search starts empty
-        <PlaylistList playlists={playlists} order={order} />
-      )}
-    </section>
+            <PlusIcon />
+            Create playlist
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={toggleSidebar}>
+            {compact ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
+            {toggleLabel(compact)}
+            <Shortcut keys={SIDEBAR_KEYS} className="ml-auto" />
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      {/* outside the menu's trigger, so a right click in the dialog does not open the column's menu */}
+      <CreatePlaylistDialog open={creating} onOpenChange={setCreating} />
+    </>
   )
 }
-
-/** What each order is called in its menu and hint, and how it ranks two playlists; ties keep the newest first, as they arrive. */
-const ORDERS = {
-  played: {
-    label: 'Recently played',
-    compare: (a: Playlist, b: Playlist) => (b.playedAt ?? -1) - (a.playedAt ?? -1),
-  },
-  created: { label: 'Date created', compare: (a: Playlist, b: Playlist) => b.createdAt - a.createdAt },
-  size: { label: 'Most songs', compare: (a: Playlist, b: Playlist) => b.trackCount - a.trackCount },
-} satisfies Record<PlaylistOrder, { label: string; compare: (a: Playlist, b: Playlist) => number }>
 
 /** The pinned playlists in the order set by hand, which drags change while `reorderable`, then the rest in `order`. */
 function PlaylistRows({
@@ -113,7 +147,7 @@ function PlaylistRows({
   compact: boolean
   reorderable: boolean
 }) {
-  const { pinned, rest } = splitPinned(playlists)
+  const { pinned, rest } = inListOrder(playlists, order)
   const dragProps = usePinReorder(
     'playlist',
     pinned.map((playlist) => playlist.id),
@@ -129,7 +163,7 @@ function PlaylistRows({
           pinDrag={reorderable ? dragProps(playlist.id) : undefined}
         />
       ))}
-      {rest.toSorted(ORDERS[order].compare).map((playlist) => (
+      {rest.map((playlist) => (
         <PlaylistLink key={playlist.id} playlist={playlist} compact={compact} />
       ))}
     </>
@@ -156,6 +190,8 @@ function PlaylistList({ playlists, order }: { playlists: Playlist[]; order: Play
               spellCheck={false}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
+              // the field keeps the webview's own menu for copy and paste rather than the column's
+              onContextMenu={(event) => event.stopPropagation()}
               className="h-8 bg-surface-hover pr-8 pl-8 focus-visible:bg-secondary"
             />
             {query !== '' && <ClearButton onClear={() => setQuery('')} className="right-1 size-6" />}
@@ -235,6 +271,8 @@ function PlaylistLink({
             setDropping(true)
           }}
           onDragLeave={() => setDropping(false)}
+          // the narrow list has no play button, so a double click plays the playlist, or pauses it when it is playing
+          onDoubleClick={compact && playlist.trackCount > 0 ? () => player.playOrToggle(context) : undefined}
           onDrop={(event) => {
             if (!carriesTrack(event)) return pinDrag?.onDrop(event)
             event.preventDefault()
@@ -246,13 +284,17 @@ function PlaylistLink({
             'flex items-center gap-3 rounded-md p-2 transition-colors group-hover:bg-surface-hover data-[status=active]:bg-surface-hover',
             // the name stops short of the play button that hovering shows
             !compact && 'group-hover:pr-11',
+            // the cover's own radius plus the padding around it, so the narrow tile's corners run parallel to the cover's
+            compact && 'rounded-[calc(var(--radius-md)+--spacing(2))]',
+            // the narrow list has no name to colour, so the tile of the playlist playing now is tinted instead
+            compact && playingHere && 'bg-primary/20 group-hover:bg-primary/30 data-[status=active]:bg-primary/30',
             pinDropMarks.list,
-            dropping && 'bg-accent ring-2 ring-primary',
+            dropping && 'bg-accent ring-1 ring-primary',
           )}
         >
           {compact ? (
             <Hint label={playlist.name} side="right">
-              <span className={cn('relative block rounded-md', playingHere && 'ring-2 ring-primary')}>
+              <span className="relative block rounded-md">
                 <Cover src={playlist.cover} kind="playlist" pinned={pinned} className="size-12" />
                 {pinned && <PinBadge size="row" />}
               </span>

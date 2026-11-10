@@ -12,6 +12,19 @@ const FEATURING: &[&str] = &["featuring", "feat.", "feat", "ft.", "ft"];
 /// Shortest part a "/" may leave on either side; shorter ones mean a name like AC/DC rather than two artists.
 const MIN_SLASH_PART: usize = 3;
 
+/// The values in the given order, trimmed, without blank ones and with repeats, regardless of case, at their first
+/// place; the shape of every list a tag holds, such as artists, genres or composers.
+pub fn distinct<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> Vec<String> {
+  let mut kept: Vec<String> = Vec::new();
+  for value in values {
+    let value = value.as_ref().trim();
+    if !value.is_empty() && !kept.iter().any(|known| known.to_lowercase() == value.to_lowercase()) {
+      kept.push(value.to_owned());
+    }
+  }
+  kept
+}
+
 /// The artists of one song, never empty, each name trimmed, non-blank and listed once regardless of case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artists(Vec<String>);
@@ -19,13 +32,7 @@ pub struct Artists(Vec<String>);
 impl Artists {
   /// The artists in the given order; blank names are dropped and repeats keep their first place.
   pub fn new<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Result<Self, TagError> {
-    let mut kept: Vec<String> = Vec::new();
-    for name in names {
-      let name = name.as_ref().trim();
-      if !name.is_empty() && !kept.iter().any(|known| known.to_lowercase() == name.to_lowercase()) {
-        kept.push(name.to_owned());
-      }
-    }
+    let kept = distinct(names);
     if kept.is_empty() {
       return Err(TagError::ArtistEmpty);
     }

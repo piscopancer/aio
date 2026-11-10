@@ -1,13 +1,21 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+  album_artists (album_id, artist_id) {
+    album_id -> Integer,
+    artist_id -> Integer,
+    position -> Integer,
+  }
+}
+
+diesel::table! {
   albums (id) {
     id -> Integer,
     title -> Text,
-    artist_id -> Nullable<Integer>,
     year -> Nullable<Integer>,
     cover -> Nullable<Text>,
     pin -> Nullable<Integer>,
+    release_type -> Nullable<Text>,
   }
 }
 
@@ -24,6 +32,18 @@ diesel::table! {
     id -> Integer,
     folder -> Nullable<Text>,
     tools_checked_at -> Nullable<BigInt>,
+  }
+}
+
+diesel::table! {
+  downloads (id) {
+    id -> Integer,
+    request -> Text,
+    folder -> Text,
+    file_name -> Nullable<Text>,
+    state -> Text,
+    track_id -> Nullable<Integer>,
+    error -> Nullable<Text>,
   }
 }
 
@@ -84,14 +104,20 @@ diesel::table! {
     folder_id -> Nullable<Integer>,
     path -> Text,
     title -> Text,
-    artist_id -> Nullable<Integer>,
     album_id -> Nullable<Integer>,
     track_no -> Nullable<Integer>,
     disc_no -> Nullable<Integer>,
     duration_ms -> Integer,
     modified -> BigInt,
-    genre -> Nullable<Text>,
     cover -> Nullable<Text>,
+  }
+}
+
+diesel::table! {
+  track_genres (track_id, name) {
+    track_id -> Integer,
+    name -> Text,
+    position -> Integer,
   }
 }
 
@@ -102,25 +128,27 @@ diesel::table! {
     text -> Nullable<Text>,
     lrclib_id -> Nullable<Integer>,
     length_ms -> Integer,
-    in_file -> Bool,
     checked_at -> BigInt,
   }
 }
 
-diesel::joinable!(albums -> artists (artist_id));
+diesel::joinable!(album_artists -> albums (album_id));
+diesel::joinable!(album_artists -> artists (artist_id));
 diesel::joinable!(lyrics -> tracks (track_id));
 diesel::joinable!(playlist_tracks -> playlists (playlist_id));
 diesel::joinable!(playlist_tracks -> tracks (track_id));
 diesel::joinable!(track_artists -> artists (artist_id));
 diesel::joinable!(track_artists -> tracks (track_id));
+diesel::joinable!(track_genres -> tracks (track_id));
 diesel::joinable!(tracks -> albums (album_id));
-diesel::joinable!(tracks -> artists (artist_id));
 diesel::joinable!(tracks -> folders (folder_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+  album_artists,
   albums,
   artists,
   download_settings,
+  downloads,
   folders,
   lyrics,
   playback_settings,
@@ -128,5 +156,6 @@ diesel::allow_tables_to_appear_in_same_query!(
   playlist_tracks,
   playlists,
   track_artists,
+  track_genres,
   tracks,
 );

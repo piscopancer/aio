@@ -64,6 +64,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::get_artist,
       commands::list_playlists,
       commands::get_playlist,
+      commands::playlists_with_track,
       commands::create_playlist,
       commands::edit_playlist,
       commands::import_cover,
@@ -198,6 +199,8 @@ pub fn run() {
         notifier.clone(),
         music_dir,
       ));
+      // the downloads quitting cut short carry on where they stopped
+      downloads.resume();
 
       let (player, inbox) = player_channel(store.playback_settings());
       let player = Arc::new(player);

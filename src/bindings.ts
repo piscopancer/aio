@@ -23,6 +23,8 @@ export const commands = {
   getArtist: (id: ArtistId) => typedError<ArtistDetail, AppError>(__TAURI_INVOKE("get_artist", { id })),
   listPlaylists: () => typedError<Playlist[], AppError>(__TAURI_INVOKE("list_playlists")),
   getPlaylist: (id: PlaylistId) => typedError<PlaylistDetail, AppError>(__TAURI_INVOKE("get_playlist", { id })),
+  /**  The playlists that already hold the song, which its add to playlist menu greys out. */
+  playlistsWithTrack: (trackId: TrackId) => typedError<PlaylistId[], AppError>(__TAURI_INVOKE("playlists_with_track", { trackId })),
   createPlaylist: (name: string, cover: string | null) => typedError<PlaylistId, AppError>(__TAURI_INVOKE("create_playlist", { name, cover })),
   /**  Sets the name and the picked cover of a playlist; a null cover lets its songs' art stand in. */
   editPlaylist: (id: PlaylistId, name: string, cover: string | null) => typedError<null, AppError>(__TAURI_INVOKE("edit_playlist", { id, name, cover })),
@@ -114,10 +116,11 @@ export type AddOutcome = {
 export type Album = {
   id: AlbumId,
   title: string,
-  /**  The artist the album is filed under; an album whose files name no artist belongs to nobody. */
-  artistId: ArtistId | null,
-  artist: string | null,
+  /**  The artists the album is filed under, the first one leading; empty when its files name no artist. */
+  artists: ArtistName[],
   year: number | null,
+  /**  What kind of release it is; none when its files do not say. */
+  releaseType: ReleaseType | null,
   cover: string | null,
   trackCount: number,
   durationMs: number,
@@ -134,7 +137,9 @@ export type AlbumDetail = {
 export type AlbumId = number;
 
 /**  Every failure a use case can report; domain rejections keep their own typed reasons. */
-export type AppError = { type: "library"; reason: LibraryError } | { type: "playlist"; reason: PlaylistError } | { type: "playback"; reason: PlaybackError } | { type: "download"; reason: DownloadError } | { type: "tags"; reason: TagError } | { type: "pin"; reason: PinError } | { type: "notFound" } | { type: "storage"; reason: string } | { type: "audio"; reason: string } | 
+export type AppError = { type: "library"; reason: LibraryError } | { type: "playlist"; reason: PlaylistError } | { type: "playback"; reason: PlaybackError } | { type: "download"; reason: DownloadError } | { type: "tags"; reason: TagError } | { type: "pin"; reason: PinError } | 
+/**  A record that was looked up does not exist, most often because it was removed meanwhile. */
+{ type: "notFound"; reason: Missing } | { type: "storage"; reason: string } | { type: "audio"; reason: string } | 
 /**  A picked image file cannot be read or decoded. */
 { type: "image"; reason: string } | 
 /**  A song file cannot be read or rewritten. */
@@ -185,7 +190,7 @@ export type CoverSource = { kind: "web"; url: string } |
 
 export type DownloadError = { type: "unsupportedLink" } | { type: "collectionLink" } | { type: "noMatch" } | { type: "unsupportedPlatform" };
 
-/**  One download started in this session. */
+/**  One download of the list, kept across launches until it is dismissed. */
 export type DownloadId = number;
 
 /**  What a pasted link resolves to, with tags guessed for the user to correct. */
@@ -221,7 +226,9 @@ export type DownloadSettingsView = {
   folder: string,
 };
 
-export type DownloadStage = { kind: "queued" } | { kind: "downloading"; percent: number } | { kind: "converting" } | { kind: "tagging" } | { kind: "done"; trackId: TrackId } | { kind: "failed"; error: AppError };
+export type DownloadStage = { kind: "queued" } | 
+/**  `total_bytes` is the size of the file being received, unknown until the site tells it. */
+{ kind: "downloading"; percent: number; totalBytes: number | null } | { kind: "converting" } | { kind: "tagging" } | { kind: "done"; trackId: TrackId } | { kind: "failed"; error: AppError };
 
 export type DownloadView = {
   id: DownloadId,
@@ -294,6 +301,11 @@ export type LyricsOrigin =
 
 /**  The lyrics panel's content for one song. */
 export type LyricsView = { kind: "synced"; lines: LyricLine[]; origin: LyricsOrigin } | { kind: "plain"; text: string; origin: LyricsOrigin } | { kind: "instrumental" } | { kind: "missing" };
+
+/**  The record a lookup did not find, with the id or path it was looked up by. */
+export type Missing = { kind: "track"; key: TrackId } | { kind: "trackFile"; key: string } | { kind: "album"; key: AlbumId } | { kind: "artist"; key: ArtistId } | { kind: "playlist"; key: PlaylistId } | { kind: "folder"; key: FolderId } | { kind: "folderPath"; key: string } | 
+/**  A storage lookup with no better description, which should not happen. */
+{ kind: "record" };
 
 export type PinError = { type: "notPinned" };
 
@@ -370,6 +382,12 @@ export type QueueItem = {
 
 /**  Identity of one queue slot, so two copies of a track and the shuffle round trip stay distinguishable. */
 export type QueueKey = number;
+
+/**
+*  What kind of release an album is, as MusicBrainz sorts them; the artist page lists albums apart from singles and
+*  EPs by it.
+*/
+export type ReleaseType = "album" | "single" | "ep";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -483,16 +501,25 @@ export type Track = {
   missing: boolean,
 };
 
-/**  The tags the edit dialog sends for one song; blank text and missing numbers clear those tags. */
+/**  The tags the edit dialog sends for one song; blank text, empty lists and missing numbers clear those tags. */
 export type TrackEdit = {
   title: string,
   /**  The credited artists in order, the main one first. */
   artists: string[],
+  /**
+  *  Whose the album is when that is not the main artist alone, as on compilations and joint albums; it goes to
+  *  every song of the album.
+  */
+  albumArtists: string[],
   album: string | null,
   year: number | null,
+  releaseType: ReleaseType | null,
   trackNo: number | null,
   discNo: number | null,
-  genre: string | null,
+  genres: string[],
+  composers: string[],
+  lyricists: string[],
+  comment: string | null,
   cover: CoverChange,
 };
 
@@ -505,13 +532,17 @@ export type TrackTags = {
   title: string,
   /**  The credited artists in order; empty when the file names none. */
   artists: string[],
-  /**  Set only when the file names an album artist of its own, as compilations do. */
-  albumArtist: string | null,
+  /**  Empty unless the file names album artists of its own, as compilations and joint albums do. */
+  albumArtists: string[],
   album: string | null,
   year: number | null,
+  releaseType: ReleaseType | null,
   trackNo: number | null,
   discNo: number | null,
-  genre: string | null,
+  genres: string[],
+  composers: string[],
+  lyricists: string[],
+  comment: string | null,
   /**  The file type by its extension, such as `MP3`. */
   format: string,
   bitrateKbps: number | null,

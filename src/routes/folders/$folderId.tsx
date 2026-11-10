@@ -4,11 +4,11 @@ import { DownloadIcon } from 'lucide-react'
 import { Cover } from '@/components/cover'
 import { DownloadDialog } from '@/components/download-dialog'
 import { EmptyState } from '@/components/empty-state'
-import { MetaDot, PageHeader } from '@/components/page-header'
+import { MetaStat, MetaStats, PageHeader } from '@/components/page-header'
 import { PlayButton } from '@/components/play-button'
 import { TrackTable } from '@/components/track-table'
 import { Button } from '@/components/ui/button'
-import { plural } from '@/lib/format'
+import { totalDuration } from '@/lib/format'
 import { idParam } from '@/lib/params'
 import { queries } from '@/lib/query'
 
@@ -18,9 +18,9 @@ export const Route = createFileRoute('/folders/$folderId')({
   component: FolderPage,
 })
 
-/** Last part of a folder path, the name the folder goes by. */
+/** Last part of a folder path, the name the folder goes by; Windows paths are split at backslashes, others at slashes. */
 function folderName(path: string) {
-  return path.split(/[\/]/).findLast((part) => part !== '') ?? path
+  return path.split(/[\\/]/).findLast((part) => part !== '') ?? path
 }
 
 function FolderPage() {
@@ -33,15 +33,15 @@ function FolderPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Folder"
+        // the folder icon already says what this is, so the line above the name shows where it is
+        eyebrow={<span className="truncate text-foreground/80 select-text">{folder.path}</span>}
         title={folderName(folder.path)}
         cover={<Cover src={null} kind="folder" />}
         meta={
-          <>
-            <span className="truncate select-text">{folder.path}</span>
-            <MetaDot />
-            <span className="shrink-0">{plural(folder.trackCount, 'song')}</span>
-          </>
+          <MetaStats>
+            <MetaStat kind="songs" value={folder.trackCount} />
+            {tracks.length > 0 && <MetaStat kind="length" value={totalDuration(tracks)} />}
+          </MetaStats>
         }
       >
         <PlayButton context={context} disabled={tracks.length === 0} />

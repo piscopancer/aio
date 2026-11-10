@@ -255,7 +255,7 @@ function useRows(query: string, done: () => void) {
         entry,
         cover: <Cover src={album.cover} kind="album" className="rounded-sm" />,
         title: album.title,
-        subtitle: [album.year, album.artist].filter((part) => part !== null).join(' • '),
+        subtitle: [album.year, credit(album.artists)].filter((part) => part !== null && part !== '').join(' • '),
         activate: choose(entry, () => navigate({ to: '/albums/$albumId', params: { albumId: album.id } })),
       }
     },

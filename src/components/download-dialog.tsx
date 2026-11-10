@@ -13,12 +13,11 @@ import { type ReactNode, useEffect, useState } from 'react'
 import type { AudioQuality, CoverSource, DownloadPreview, FolderCheck, PlaylistId } from '@/bindings'
 import { Cover, SourceCover } from '@/components/cover'
 import { CoverPicker } from '@/components/cover-picker'
-import { ServiceIcon, linkService, serviceNames } from '@/components/service-icon'
+import { ServiceIcon, ServiceStack, linkService, serviceNames } from '@/components/service-icon'
 import { AlbumField, ArtistsField, leading } from '@/components/library-fields'
 import { Fact, SongCard, YEAR_PATTERN, digitsOf } from '@/components/song-card'
 import { ToolInstallProgress } from '@/components/tool-install'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogBody,
@@ -35,6 +34,7 @@ import { RadioCard, RadioGroup } from '@/components/ui/radio-group'
 import { TextField } from '@/components/ui/text-field'
 import { useDebounced } from '@/lib/debounce'
 import { formatBytes, formatClock } from '@/lib/format'
+import { useOrderedPlaylists } from '@/lib/playlists'
 import { mutations, queries } from '@/lib/query'
 
 /** Pause after the last key press before a typed link is looked up; a pasted link is looked up at once. */
@@ -84,8 +84,14 @@ function DownloadForm({ origin, onDone }: { origin: Origin; onDone: () => void }
   return (
     <DialogContent className="max-w-xl">
       <DialogHeader>
-        <DialogTitle>Download a song</DialogTitle>
-        <DialogDescription>Paste a link to a song on YouTube, YouTube Music or Spotify.</DialogDescription>
+        <div className="flex items-center gap-3">
+          <DialogTitle>Download a song</DialogTitle>
+          <ServiceStack />
+        </div>
+        {/* the marks beside the title say it to the eye, this to screen readers */}
+        <DialogDescription className="sr-only">
+          Paste a link to a song on YouTube, YouTube Music or Spotify.
+        </DialogDescription>
       </DialogHeader>
       <div className="flex shrink-0 items-center gap-2 px-6 py-6">
         <label className="relative flex min-w-0 flex-1 items-center">
@@ -259,9 +265,9 @@ function PreviewForm({ preview, origin, onDone }: { preview: DownloadPreview; or
               placeholder={preview.album ?? undefined}
               value={album}
               onValueChange={setAlbum}
-              owner={artists[0] ?? null}
+              owners={artists.slice(0, 1)}
               onPick={(picked) => {
-                setArtists(leading(picked.artist, artists))
+                setArtists(leading(picked.artists[0]?.name ?? null, artists))
                 if (picked.year !== null) setYear(picked.year.toString())
               }}
             />
@@ -367,28 +373,30 @@ function FolderNote({ check }: { check: FolderCheck }) {
   }
 }
 
-/** Checkboxes of every playlist the song should be added to once it is downloaded. */
+/** Tiles of every playlist, a big cover over its name, that pick the ones the song should be added to once it is downloaded; a picked tile is outlined in the accent colour. */
 function PlaylistPicker({ selected, onChange }: { selected: PlaylistId[]; onChange: (ids: PlaylistId[]) => void }) {
-  const { data: playlists = [] } = useQuery(queries.playlists())
+  const playlists = useOrderedPlaylists()
   if (playlists.length === 0) return null
   return (
     <Section title="Add to playlists">
-      <div className="grid max-h-40 gap-1 overflow-y-auto">
-        {playlists.map((playlist) => (
-          <label
-            key={playlist.id}
-            className="flex cursor-pointer items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-surface-hover"
-          >
-            <Checkbox
-              checked={selected.includes(playlist.id)}
-              onCheckedChange={(checked) =>
-                onChange(checked === true ? [...selected, playlist.id] : selected.filter((id) => id !== playlist.id))
+      <div className="grid max-h-80 grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-1 overflow-y-auto">
+        {playlists.map((playlist) => {
+          const picked = selected.includes(playlist.id)
+          return (
+            <button
+              key={playlist.id}
+              type="button"
+              aria-pressed={picked}
+              onClick={() =>
+                onChange(picked ? selected.filter((id) => id !== playlist.id) : [...selected, playlist.id])
               }
-            />
-            <Cover src={playlist.cover} kind="playlist" className="size-7 rounded-sm" />
-            <span className="truncate">{playlist.name}</span>
-          </label>
-        ))}
+              className="group flex min-w-0 cursor-pointer flex-col gap-2 rounded-lg p-2 text-left text-sm outline-1 -outline-offset-1 outline-transparent transition-[outline-color] hover:bg-surface-hover focus-visible:bg-surface-hover aria-pressed:outline-primary"
+            >
+              <Cover src={playlist.cover} kind="playlist" className="w-full" />
+              <span className="truncate font-medium group-aria-pressed:text-primary">{playlist.name}</span>
+            </button>
+          )
+        })}
       </div>
     </Section>
   )

@@ -276,7 +276,11 @@ impl MediaSource for YtDlpMedia {
           if let (Some(Some(done)), Some(Some(total))) = (parts.next(), parts.next())
             && total > 0.0
           {
-            progress(FetchProgress::Downloading((done / total).clamp(0.0, 1.0) as f32));
+            progress(FetchProgress::Downloading {
+              fraction: (done / total).clamp(0.0, 1.0) as f32,
+              // a song past 4 GB is no song, so the size saturates rather than wraps
+              total_bytes: total.min(f64::from(u32::MAX)) as u32,
+            });
           }
         } else if line.starts_with("[ExtractAudio]") || line.starts_with("[Fixup") {
           progress(FetchProgress::Converting);

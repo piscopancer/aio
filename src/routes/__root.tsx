@@ -3,6 +3,7 @@ import { Link, createRootRouteWithContext } from '@tanstack/react-router'
 import { useState } from 'react'
 import { LibraryTabs } from '@/components/library-tabs'
 import { PlayerBar } from '@/components/player-bar'
+import { ErrorDialog } from '@/components/error-dialog'
 import { LyricsPanel, LyricsStage } from '@/components/lyrics-panel'
 import { MainView } from '@/components/main-view'
 import { QueuePanel } from '@/components/queue-panel'
@@ -10,6 +11,7 @@ import { Sidebar } from '@/components/sidebar'
 import { Button } from '@/components/ui/button'
 import { Toolbar } from '@/components/toolbar'
 import { TrackEditDialog } from '@/components/track-edit-dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useLayout } from '@/lib/layout'
@@ -38,10 +40,12 @@ function Shell() {
             <div className="relative flex min-w-0 flex-1 gap-2">
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
                 <LibraryTabs />
-                <main ref={setScrollElement} className="min-h-0 flex-1 overflow-y-auto">
-                  <ScrollContainerContext value={scrollElement}>
-                    <MainView />
-                  </ScrollContainerContext>
+                <main className="min-h-0 flex-1">
+                  <ScrollArea viewportRef={setScrollElement} className="h-full">
+                    <ScrollContainerContext value={scrollElement}>
+                      <MainView />
+                    </ScrollContainerContext>
+                  </ScrollArea>
                 </main>
               </div>
               {panel === 'queue' && <QueuePanel />}
@@ -54,6 +58,7 @@ function Shell() {
       </div>
       {lyricsView === 'fullscreen' && <LyricsStage view="fullscreen" />}
       <TrackEditDialog />
+      <ErrorDialog />
       <Toaster />
     </TooltipProvider>
   )

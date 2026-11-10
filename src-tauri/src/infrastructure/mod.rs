@@ -6,6 +6,7 @@ pub mod files;
 pub mod lrclib;
 pub mod media;
 pub mod oklch;
+pub mod opus;
 mod schema;
 pub mod sqlite;
 pub mod tag_sources;

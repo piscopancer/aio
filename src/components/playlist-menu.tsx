@@ -13,13 +13,15 @@ import {
 import { player } from '@/lib/player'
 import { queries, queryClient } from '@/lib/query'
 
-/** Right-click menu of a playlist entry, with its rename and delete dialogs. */
+/** Right-click menu of a playlist entry, with its rename and delete dialogs; it wins over the menu of the column the entry sits in. */
 export function PlaylistMenu({ playlist, children }: { playlist: Playlist; children: ReactNode }) {
   const [dialog, setDialog] = useState<PlaylistDialog>(null)
   return (
     <>
       <ContextMenu>
-        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+        <ContextMenuTrigger asChild onContextMenu={(event) => event.stopPropagation()}>
+          {children}
+        </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
             disabled={playlist.trackCount === 0}

@@ -1,14 +1,15 @@
-use std::fs::File;
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
 use rodio::source::SineWave;
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 
 use crate::application::error::{AppError, AppResult};
 use crate::application::ports::AudioOutput;
 use crate::application::views::Track;
 use crate::domain::playback::Volume;
+use crate::infrastructure::opus;
 
 /// Path prefix of scenario tracks, which play a generated tone instead of a file.
 pub const FIXTURE_PREFIX: &str = "fixture:";
@@ -104,8 +105,5 @@ fn source(track: &Track) -> AppResult<Box<dyn Source + Send>> {
       .take_duration(Duration::from_millis(track.duration_ms.into()));
     return Ok(Box::new(tone));
   }
-  let fail = |error: &dyn std::fmt::Display| AppError::Audio(format!("{}: {error}", track.path));
-  let file = File::open(&track.path).map_err(|e| fail(&e))?;
-  let decoder = Decoder::try_from(file).map_err(|e| fail(&e))?;
-  Ok(Box::new(decoder))
+  opus::open(Path::new(&track.path)).map_err(|error| AppError::Audio(format!("{}: {error}", track.path)))
 }

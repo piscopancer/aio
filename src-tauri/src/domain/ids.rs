@@ -23,4 +23,6 @@ id!(
   FolderId,
   /// One download of the list, kept across launches until it is dismissed.
   DownloadId,
+  /// One stretch of a song the player played, kept in the play history.
+  PlayId,
 );

@@ -21,7 +21,7 @@ export function RouteError({ error, reset }: ErrorComponentProps) {
           Try again
         </Button>
         <Button variant="outline" asChild>
-          <Link to="/">Back to songs</Link>
+          <Link to="/">Back home</Link>
         </Button>
       </div>
     </div>

@@ -12,10 +12,10 @@ use super::error::AppResult;
 use super::views::*;
 use crate::domain::artists::Artists;
 use crate::domain::download::{AudioQuality, Candidate, VideoFacts};
-use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
+use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlayId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{Crossfade, PlaybackContext, QueueSnapshot, RepeatMode, Volume};
+use crate::domain::playback::{Crossfade, Listen, PlaybackContext, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 use crate::domain::tags::{ReleaseType, SongTags};
 
@@ -151,6 +151,10 @@ pub trait LibraryQueries: Send + Sync {
   fn playlist(&self, id: PlaylistId) -> AppResult<PlaylistDetail>;
   /// The playlists that already hold the track.
   fn playlists_with_track(&self, track: TrackId) -> AppResult<Vec<PlaylistId>>;
+  /// When the played songs and playlists were last played, the latest first.
+  fn scores(&self) -> AppResult<Scores>;
+  /// The `limit` songs whose files changed last, as a download or a copy into a folder does, the newest first.
+  fn newest_tracks(&self, limit: u32) -> AppResult<Vec<Track>>;
 
   /// Tracks of a playback context in the order its view shows them.
   fn context_tracks(&self, context: PlaybackContext) -> AppResult<Vec<Track>> {
@@ -167,8 +171,26 @@ pub trait LibraryQueries: Send + Sync {
           .collect(),
       ),
       PlaybackContext::Folder { id } => Ok(self.folder(id)?.tracks),
+      PlaybackContext::Recent => super::home::recent_songs(self),
+      PlaybackContext::Added => super::home::added_songs(self),
     }
   }
+}
+
+/// When the played songs and the playlists played from were last played, as Unix seconds of the start of their latest
+/// play that counted, the latest first; a playlist counts only what was played from it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scores {
+  pub tracks: Vec<(TrackId, u32)>,
+  pub playlists: Vec<(PlaylistId, u32)>,
+}
+
+/// The play history, which the player adds to as it plays.
+pub trait PlayHistory: Send + Sync {
+  /// Keeps a listen the player is in the middle of, giving it its id.
+  fn add_listen(&self, listen: &Listen) -> AppResult<PlayId>;
+  /// Stores how long a kept listen was heard by now and whether that counts as a play.
+  fn update_listen(&self, id: PlayId, listen: &Listen) -> AppResult<()>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -228,6 +250,8 @@ pub trait Notifier: Send + Sync {
   fn playback_progress(&self, position_ms: u32);
   fn playback_failed(&self, error: &super::error::AppError);
   fn library_changed(&self);
+  /// The play history gained a play or more time heard, so the home page is stale.
+  fn history_changed(&self);
   fn scan_progress(&self, done: u32, total: u32);
   fn downloads_changed(&self, downloads: &[DownloadView]);
   fn tools_changed(&self, tools: &ToolsView);
@@ -244,6 +268,11 @@ pub struct DownloadSettings {
 pub trait DownloadSettingsStore: Send + Sync {
   fn download_settings(&self) -> DownloadSettings;
   fn save_download_settings(&self, settings: &DownloadSettings) -> AppResult<()>;
+}
+
+pub trait WindowSettingsStore: Send + Sync {
+  fn window_settings(&self) -> WindowSettings;
+  fn save_window_settings(&self, settings: WindowSettings) -> AppResult<()>;
 }
 
 /// A video as the media site describes it.

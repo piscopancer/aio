@@ -4,12 +4,13 @@ import { RouteError } from '@/components/route-error'
 import { ScrollContainerContext } from '@/lib/virtual'
 import { Route as albumsRoute } from '@/routes/albums/index'
 import { Route as artistsRoute } from '@/routes/artists/index'
-import { Route as songsRoute } from '@/routes/index'
+import { Route as homeRoute } from '@/routes/index'
 import { Route as foldersRoute } from '@/routes/settings/folders'
+import { Route as songsRoute } from '@/routes/songs'
 
 /** Pages of the library tabs, which are heavy to build; they are all rendered from the start and only hidden while
  * another page is shown, so a tab switch shows its page at once, scrolled where it was left. */
-const tabRoutes = [foldersRoute, artistsRoute, albumsRoute, songsRoute] as const
+const tabRoutes = [homeRoute, foldersRoute, artistsRoute, albumsRoute, songsRoute] as const
 
 type TabRouteId = (typeof tabRoutes)[number]['id']
 

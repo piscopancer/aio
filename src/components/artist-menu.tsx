@@ -69,20 +69,25 @@ export function ArtistLinks({
   if (artists.length === 0) return null
   return (
     <Marquee play={play} className={className}>
-      {artists.map((artist, index) => (
-        <Fragment key={artist.id}>
-          {index > 0 && ', '}
-          <ArtistMenu artistId={artist.id}>
-            <Link
-              to="/artists/$artistId"
-              params={{ artistId: artist.id }}
-              className="hover:text-foreground hover:underline"
-            >
-              {artist.name}
-            </Link>
-          </ArtistMenu>
-        </Fragment>
-      ))}
+      <ArtistLinkList artists={artists} />
     </Marquee>
   )
+}
+
+/** The links of `ArtistLinks` alone, for a line that already runs as a marquee. */
+export function ArtistLinkList({ artists }: { artists: readonly ArtistName[] }) {
+  return artists.map((artist, index) => (
+    <Fragment key={artist.id}>
+      {index > 0 && ', '}
+      <ArtistMenu artistId={artist.id}>
+        <Link
+          to="/artists/$artistId"
+          params={{ artistId: artist.id }}
+          className="hover:text-foreground hover:underline"
+        >
+          {artist.name}
+        </Link>
+      </ArtistMenu>
+    </Fragment>
+  ))
 }

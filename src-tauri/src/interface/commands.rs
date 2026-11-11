@@ -6,12 +6,13 @@ use super::cli::Scenario;
 use crate::application::covers::CoverService;
 use crate::application::downloads::{DownloadRequest, DownloadService};
 use crate::application::error::{AppError, AppResult};
+use crate::application::home;
 use crate::application::library::LibraryService;
 use crate::application::lyrics::LyricsService;
 use crate::application::pins::PinService;
 use crate::application::playback::{PlayerCommand, PlayerHandle};
 use crate::application::playlists::PlaylistService;
-use crate::application::ports::LibraryQueries;
+use crate::application::ports::{LibraryQueries, WindowSettingsStore};
 use crate::application::tag_search::{TagSearchQuery, TagSearchService};
 use crate::application::tags::{TagService, TrackEdit};
 use crate::application::views::*;
@@ -32,6 +33,7 @@ pub struct AppState {
   pub downloads: Arc<DownloadService>,
   pub queries: Arc<dyn LibraryQueries>,
   pub player: Arc<PlayerHandle>,
+  pub window_settings: Arc<dyn WindowSettingsStore>,
   pub scenario: Option<Scenario>,
 }
 
@@ -161,6 +163,14 @@ pub async fn get_artist(state: Ctx<'_>, id: ArtistId) -> AppResult<ArtistDetail>
 pub async fn list_playlists(state: Ctx<'_>) -> AppResult<Vec<Playlist>> {
   let q = queries(&state);
   blocking(move || q.playlists()).await
+}
+
+/// The home page: what was played last and the songs added last.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_home(state: Ctx<'_>) -> AppResult<Home> {
+  let q = queries(&state);
+  blocking(move || home::home(q.as_ref())).await
 }
 
 #[tauri::command]
@@ -440,6 +450,33 @@ pub fn set_crossfade(state: Ctx<'_>, seconds: u8) -> AppResult<()> {
 #[specta::specta]
 pub fn set_discord_status(state: Ctx<'_>, shown: bool) {
   state.player.send(PlayerCommand::SetDiscordStatus(shown));
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_window_settings(state: Ctx<'_>) -> WindowSettings {
+  state.window_settings.window_settings()
+}
+
+/// Makes closing the window hide it to the tray, or quit the app again.
+#[tauri::command]
+#[specta::specta]
+pub fn set_close_to_tray(state: Ctx<'_>, close_to_tray: bool) -> AppResult<WindowSettings> {
+  change_window_settings(&state, |settings| settings.close_to_tray = close_to_tray)
+}
+
+/// Makes a launch by Windows at sign-in stay in the tray, or show the window.
+#[tauri::command]
+#[specta::specta]
+pub fn set_start_hidden(state: Ctx<'_>, start_hidden: bool) -> AppResult<WindowSettings> {
+  change_window_settings(&state, |settings| settings.start_hidden = start_hidden)
+}
+
+fn change_window_settings(state: &AppState, change: impl FnOnce(&mut WindowSettings)) -> AppResult<WindowSettings> {
+  let mut settings = state.window_settings.window_settings();
+  change(&mut settings);
+  state.window_settings.save_window_settings(settings)?;
+  Ok(settings)
 }
 
 #[tauri::command]

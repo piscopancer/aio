@@ -41,6 +41,18 @@ pub struct Track {
   pub presence: Presence,
 }
 
+impl Track {
+  /// The credited artists in one line, as the player bar shows them.
+  pub fn credit(&self) -> String {
+    self
+      .artists
+      .iter()
+      .map(|artist| artist.name.as_str())
+      .collect::<Vec<_>>()
+      .join(", ")
+  }
+}
+
 /// Whether a song can be played from the library; only playlists list the songs that cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +154,25 @@ pub struct Playlist {
   pub pin: Option<u32>,
 }
 
+/// One card of a home page section.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HomeEntry {
+  Track { track: Track },
+  Album { album: Album },
+  Artist { artist: Artist },
+  Playlist { playlist: Playlist },
+}
+
+/// The sections of the home page.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct Home {
+  /// A few songs, albums, artists and playlists mixed, the one played last first.
+  pub recent: Vec<HomeEntry>,
+  /// The songs added last, the newest first.
+  pub added: Vec<Track>,
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct AlbumDetail {
   pub album: Album,
@@ -196,6 +227,32 @@ pub struct PlayerState {
   pub crossfade: u8,
   /// Whether Discord shows the playing song on the user's profile.
   pub discord_status: bool,
+}
+
+impl PlayerState {
+  /// The song the player has loaded or would play next.
+  pub fn current_track(&self) -> Option<&Track> {
+    let index = usize::try_from(self.index?).ok()?;
+    self.queue.get(index).map(|item| &item.track)
+  }
+}
+
+/// How the window behaves: whether closing it hides it to the tray, and whether a launch by Windows at sign-in stays
+/// in the tray without showing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSettings {
+  pub close_to_tray: bool,
+  pub start_hidden: bool,
+}
+
+impl Default for WindowSettings {
+  fn default() -> Self {
+    Self {
+      close_to_tray: true,
+      start_hidden: false,
+    }
+  }
 }
 
 /// One quality the preview offers, with the size it would roughly take.

@@ -35,7 +35,7 @@ function Shell() {
       <div className="flex h-full flex-col">
         <Toolbar />
         <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-2 px-2">
-          <div className="flex min-h-0 gap-2">
+          <div className="flex min-h-0 min-w-0 gap-2">
             <Sidebar />
             <div className="relative flex min-w-0 flex-1 gap-2">
               <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg bg-surface">
@@ -70,7 +70,7 @@ function NotFound() {
       <h1 className="text-3xl font-bold">Not found</h1>
       <p className="text-muted-foreground">It may have been removed from the library.</p>
       <Button variant="light" asChild>
-        <Link to="/">Back to songs</Link>
+        <Link to="/">Back home</Link>
       </Button>
     </div>
   )

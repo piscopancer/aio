@@ -1,7 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { open } from '@tauri-apps/plugin-dialog'
+import { formatDistanceToNow, fromUnixTime } from 'date-fns'
 import { FolderIcon, LoaderCircleIcon, RefreshCwIcon } from 'lucide-react'
 import type { ToolVersions, ToolsView } from '@/bindings'
+import { Hint } from '@/components/hint'
 import { Field } from '@/components/settings-field'
 import { InstallBar, installAmount, toolNames } from '@/components/tool-install'
 import { Button } from '@/components/ui/button'
@@ -73,9 +75,11 @@ export function DownloadSettings() {
                   : 'Install missing tools'}
           </Button>
           {toolsView?.checkedAt != null && (
-            <span className="text-xs text-muted-foreground">
-              Last checked {new Date(toolsView.checkedAt * 1000).toLocaleString()}
-            </span>
+            <Hint label={fromUnixTime(toolsView.checkedAt).toLocaleString()}>
+              <span className="cursor-default text-xs text-muted-foreground">
+                Last checked {formatDistanceToNow(fromUnixTime(toolsView.checkedAt), { addSuffix: true })}
+              </span>
+            </Hint>
           )}
         </div>
       </Field>

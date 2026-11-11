@@ -3,6 +3,7 @@
 pub mod covers;
 pub mod downloads;
 pub mod error;
+pub mod home;
 pub mod library;
 pub mod lyrics;
 pub mod pins;

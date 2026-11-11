@@ -14,6 +14,7 @@ export async function connectBackend() {
   await Promise.all([
     syncPlayer(),
     events.libraryChanged.listen(() => void invalidateLibrary()),
+    events.historyChanged.listen(() => void queryClient.invalidateQueries(queries.home())),
     events.playbackFailed.listen(({ payload }) => reportError(new CommandError(payload))),
     events.scanProgress.listen(({ payload }) => useScan.setState(payload.done < payload.total ? payload : null, true)),
     events.downloadsChanged.listen(({ payload }) => {

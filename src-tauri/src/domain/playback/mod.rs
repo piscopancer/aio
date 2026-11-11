@@ -1,6 +1,8 @@
+mod listen;
 mod policy;
 mod queue;
 
+pub use listen::Listen;
 pub use policy::{Previous, resume_point};
 pub use queue::{Advance, Following, Queue, QueueEntry, QueueKey, QueueSnapshot, Removal};
 
@@ -49,10 +51,22 @@ impl RepeatMode {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PlaybackContext {
   Songs,
-  Album { id: AlbumId },
-  Artist { id: ArtistId },
-  Playlist { id: PlaylistId },
-  Folder { id: FolderId },
+  Album {
+    id: AlbumId,
+  },
+  Artist {
+    id: ArtistId,
+  },
+  Playlist {
+    id: PlaylistId,
+  },
+  Folder {
+    id: FolderId,
+  },
+  /// The songs the home page shows as played last.
+  Recent,
+  /// The songs the home page shows as added last.
+  Added,
 }
 
 /// Output level in percent, from silent (0) to full (100), as the user sets it on the slider.

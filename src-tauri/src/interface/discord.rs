@@ -78,19 +78,11 @@ fn status() -> &'static Status {
 /// Shows the player's new state in Discord, from whichever thread reports it.
 pub fn show(state: &PlayerState) {
   let track = state
-    .index
-    .and_then(|index| state.queue.get(usize::try_from(index).ok()?))
-    .map(|item| &item.track)
+    .current_track()
     .filter(|_| state.discord_status && state.is_playing);
   let listening = track.map(|track| Listening {
     title: track.title.clone(),
-    // the same credit line the player bar shows
-    artists: track
-      .artists
-      .iter()
-      .map(|artist| artist.name.as_str())
-      .collect::<Vec<_>>()
-      .join(", "),
+    artists: track.credit(),
     duration_ms: track.duration_ms,
     started_at: started_at(state.position_ms),
   });

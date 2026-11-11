@@ -56,6 +56,17 @@ diesel::table! {
 }
 
 diesel::table! {
+  lyrics (track_id) {
+    track_id -> Integer,
+    kind -> Text,
+    text -> Nullable<Text>,
+    lrclib_id -> Nullable<Integer>,
+    length_ms -> Integer,
+    checked_at -> BigInt,
+  }
+}
+
+diesel::table! {
   playback_settings (id) {
     id -> Integer,
     volume -> Integer,
@@ -95,9 +106,29 @@ diesel::table! {
 }
 
 diesel::table! {
+  plays (id) {
+    id -> Integer,
+    track_id -> Integer,
+    context_kind -> Nullable<Text>,
+    context_id -> Nullable<Integer>,
+    started_at -> BigInt,
+    heard_ms -> Integer,
+    counted -> Bool,
+  }
+}
+
+diesel::table! {
   track_artists (track_id, artist_id) {
     track_id -> Integer,
     artist_id -> Integer,
+    position -> Integer,
+  }
+}
+
+diesel::table! {
+  track_genres (track_id, name) {
+    track_id -> Integer,
+    name -> Text,
     position -> Integer,
   }
 }
@@ -118,21 +149,10 @@ diesel::table! {
 }
 
 diesel::table! {
-  track_genres (track_id, name) {
-    track_id -> Integer,
-    name -> Text,
-    position -> Integer,
-  }
-}
-
-diesel::table! {
-  lyrics (track_id) {
-    track_id -> Integer,
-    kind -> Text,
-    text -> Nullable<Text>,
-    lrclib_id -> Nullable<Integer>,
-    length_ms -> Integer,
-    checked_at -> BigInt,
+  window_settings (id) {
+    id -> Integer,
+    close_to_tray -> Bool,
+    start_hidden -> Bool,
   }
 }
 
@@ -141,6 +161,7 @@ diesel::joinable!(album_artists -> artists (artist_id));
 diesel::joinable!(lyrics -> tracks (track_id));
 diesel::joinable!(playlist_tracks -> playlists (playlist_id));
 diesel::joinable!(playlist_tracks -> tracks (track_id));
+diesel::joinable!(plays -> tracks (track_id));
 diesel::joinable!(track_artists -> artists (artist_id));
 diesel::joinable!(track_artists -> tracks (track_id));
 diesel::joinable!(track_genres -> tracks (track_id));
@@ -159,7 +180,9 @@ diesel::allow_tables_to_appear_in_same_query!(
   player_session,
   playlist_tracks,
   playlists,
+  plays,
   track_artists,
   track_genres,
   tracks,
+  window_settings,
 );

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useMatchRoute } from '@tanstack/react-router'
-import { Disc3Icon, FolderOpenIcon, MicVocalIcon, Music2Icon } from 'lucide-react'
+import { Disc3Icon, FolderOpenIcon, HouseIcon, MicVocalIcon, Music2Icon } from 'lucide-react'
 import { motion } from 'motion/react'
 import type { ReactNode } from 'react'
 import type { PlaybackContext } from '@/bindings'
@@ -21,7 +21,7 @@ const playingTabClass = 'text-primary!'
 /** How the grey background of the current tab glides to the next one. */
 const chipTransition = { type: 'spring', bounce: 0.15, duration: 0.25 } as const
 
-/** Tabs of the library above the main view: Folders on its own, then Artists, Albums and Songs from general to specific. */
+/** Tabs of the library above the main view: Home and Folders each on its own, then Artists, Albums and Songs from general to specific. */
 export function LibraryTabs() {
   const matchRoute = useMatchRoute()
   const counts = {
@@ -39,6 +39,15 @@ export function LibraryTabs() {
   return (
     <nav className="flex shrink-0 items-center gap-3 px-4 py-3">
       <TabGroup>
+        <Link
+          to="/"
+          className={cn(tabClass, playingFrom('recent'), playingFrom('added'))}
+          activeOptions={{ exact: true }}
+        >
+          {({ isActive }) => <TabLabel active={isActive} icon={<HouseIcon />} label="Home" count={undefined} />}
+        </Link>
+      </TabGroup>
+      <TabGroup>
         <Link to="/settings/folders" className={cn(tabClass, inFolder && 'text-foreground', playingFrom('folder'))}>
           {({ isActive }) => (
             <TabLabel active={isActive || inFolder} icon={<FolderOpenIcon />} label="Folders" count={counts.folders} />
@@ -54,7 +63,7 @@ export function LibraryTabs() {
         <Link to="/albums" className={cn(tabClass, playingFrom('album'))}>
           {({ isActive }) => <TabLabel active={isActive} icon={<Disc3Icon />} label="Albums" count={counts.albums} />}
         </Link>
-        <Link to="/" className={cn(tabClass, playingFrom('songs'))} activeOptions={{ exact: true }}>
+        <Link to="/songs" className={cn(tabClass, playingFrom('songs'))}>
           {({ isActive }) => <TabLabel active={isActive} icon={<Music2Icon />} label="Songs" count={counts.songs} />}
         </Link>
       </TabGroup>

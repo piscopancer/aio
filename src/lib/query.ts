@@ -1,5 +1,6 @@
 import { MutationCache, QueryCache, QueryClient, mutationOptions, queryOptions } from '@tanstack/react-query'
 import { getVersion } from '@tauri-apps/api/app'
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import {
   type AlbumId,
@@ -15,6 +16,7 @@ import {
   type TagSearchQuery,
   type TrackEdit,
   type TrackId,
+  type WindowSettings,
 } from '@/bindings'
 import { toast } from 'sonner'
 import { reportError } from '@/lib/errors'
@@ -55,6 +57,9 @@ const roots = {
 
 export const queries = {
   appVersion: () => queryOptions({ queryKey: ['appVersion'], queryFn: () => getVersion() }),
+  /** Whether Windows starts the app at sign-in, as its startup list holds it; the user may change it there too. */
+  autostart: () => queryOptions({ queryKey: ['autostart'], queryFn: () => isEnabled(), staleTime: 0 }),
+  windowSettings: () => queryOptions({ queryKey: ['windowSettings'], queryFn: () => commands.getWindowSettings() }),
   scenario: () => queryOptions({ queryKey: ['scenario'], queryFn: () => commands.getScenario() }),
   folders: () =>
     queryOptions({ queryKey: [...roots.library, 'folders'], queryFn: () => unwrap(commands.listFolders()) }),
@@ -70,6 +75,8 @@ export const queries = {
   artist: (id: ArtistId) =>
     queryOptions({ queryKey: [...roots.library, 'artists', id], queryFn: () => unwrap(commands.getArtist(id)) }),
   playlists: () => queryOptions({ queryKey: [...roots.playlists], queryFn: () => unwrap(commands.listPlaylists()) }),
+  /** What was played last and the songs added last; under the library root, as it lists the library's songs. */
+  home: () => queryOptions({ queryKey: [...roots.library, 'home'], queryFn: () => unwrap(commands.getHome()) }),
   playlist: (id: PlaylistId) =>
     queryOptions({ queryKey: [...roots.playlists, id], queryFn: () => unwrap(commands.getPlaylist(id)) }),
   /** The playlists that already hold the song; under the playlists root, so adding or removing songs refetches it. */
@@ -174,7 +181,26 @@ export function invalidatePlaylists() {
   return queryClient.invalidateQueries({ queryKey: roots.playlists })
 }
 
+/** Puts the window settings the backend saved into the cache. */
+const keepWindowSettings = (settings: WindowSettings) =>
+  queryClient.setQueryData(queries.windowSettings().queryKey, settings)
+
 export const mutations = {
+  setAutostart: () =>
+    mutationOptions({
+      mutationFn: (on: boolean) => (on ? enable() : disable()),
+      onSuccess: (_, on) => queryClient.setQueryData(queries.autostart().queryKey, on),
+    }),
+  setCloseToTray: () =>
+    mutationOptions({
+      mutationFn: (on: boolean) => unwrap(commands.setCloseToTray(on)),
+      onSuccess: keepWindowSettings,
+    }),
+  setStartHidden: () =>
+    mutationOptions({
+      mutationFn: (on: boolean) => unwrap(commands.setStartHidden(on)),
+      onSuccess: keepWindowSettings,
+    }),
   addFolder: () => mutationOptions({ mutationFn: (path: string) => unwrap(commands.addFolder(path)) }),
   removeFolder: () => mutationOptions({ mutationFn: (path: string) => unwrap(commands.removeFolder(path)) }),
   setFolderHidden: () =>

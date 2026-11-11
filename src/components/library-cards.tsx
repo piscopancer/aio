@@ -1,12 +1,15 @@
 import { Link } from '@tanstack/react-router'
 import { type ComponentProps, memo } from 'react'
-import type { Album, Artist } from '@/bindings'
+import type { Album, Artist, PlaybackContext, Playlist, Track } from '@/bindings'
 import { AlbumMenu } from '@/components/album-menu'
-import { ArtistMenu } from '@/components/artist-menu'
+import { ArtistLinkList, ArtistMenu } from '@/components/artist-menu'
 import { Count, Counts } from '@/components/count'
 import { Cover } from '@/components/cover'
 import { MediaCard, cardLinkClass } from '@/components/media-card'
+import { PlaylistMenu } from '@/components/playlist-menu'
+import { TrackMenu } from '@/components/track-menu'
 import { credit, releaseLabel } from '@/lib/format'
+import { player } from '@/lib/player'
 
 /** Props a card passes on to its root, such as drag handlers of a pinned card. */
 type CardProps = Omit<ComponentProps<typeof MediaCard>, 'cover' | 'title' | 'subtitle' | 'context' | 'link' | 'pinned'>
@@ -42,6 +45,34 @@ export const AlbumCard = memo(function AlbumCard({
   )
 })
 
+/** Card of a playlist in a grid, with the same menu as its entry in the sidebar; memoized for the same reason as `AlbumCard`. */
+export const PlaylistCard = memo(function PlaylistCard({ playlist, ...props }: { playlist: Playlist } & CardProps) {
+  return (
+    <PlaylistMenu playlist={playlist}>
+      <MediaCard
+        {...props}
+        pinned={playlist.pin !== null}
+        cover={<Cover src={playlist.cover} kind="playlist" pinned={playlist.pin !== null} />}
+        title={playlist.name}
+        subtitle={
+          <Counts>
+            <Count kind="songs" value={playlist.trackCount} />
+          </Counts>
+        }
+        context={{ kind: 'playlist', id: playlist.id }}
+        link={
+          <Link
+            to="/playlists/$playlistId"
+            params={{ playlistId: playlist.id }}
+            aria-label={playlist.name}
+            className={cardLinkClass}
+          />
+        }
+      />
+    </PlaylistMenu>
+  )
+})
+
 /** Card of an artist in a grid; memoized for the same reason as `AlbumCard`. */
 export const ArtistCard = memo(function ArtistCard({ artist, ...props }: { artist: Artist } & CardProps) {
   return (
@@ -57,7 +88,6 @@ export const ArtistCard = memo(function ArtistCard({ artist, ...props }: { artis
             <Count kind="songs" value={artist.trackCount} />
           </Counts>
         }
-        tightSubtitle
         context={{ kind: 'artist', id: artist.id }}
         link={
           <Link
@@ -69,5 +99,39 @@ export const ArtistCard = memo(function ArtistCard({ artist, ...props }: { artis
         }
       />
     </ArtistMenu>
+  )
+})
+
+/** Card of a song that plays it from `context`, the rest of the context following; memoized for the same reason as
+ * `AlbumCard`. */
+export const TrackCard = memo(function TrackCard({
+  track,
+  context,
+  ...props
+}: { track: Track; context: PlaybackContext } & CardProps) {
+  return (
+    <TrackMenu track={track} context={context}>
+      <MediaCard
+        {...props}
+        cover={<Cover src={track.cover} kind="track" />}
+        title={track.title}
+        subtitle={
+          // above the card's play layer, so each name opens its artist
+          <span className="relative z-10">
+            <ArtistLinkList artists={track.artists} />
+          </span>
+        }
+        context={context}
+        trackId={track.id}
+        link={
+          <button
+            type="button"
+            aria-label={track.title}
+            className={cardLinkClass}
+            onClick={() => player.playOrToggle(context, track.id)}
+          />
+        }
+      />
+    </TrackMenu>
   )
 })

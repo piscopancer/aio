@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { ExplainOnHover } from '@/components/ui/field-label'
 import { queries } from '@/lib/query'
 import { type UpdateStatus, checkForUpdates, installUpdate, useUpdates } from '@/lib/updates'
 
@@ -32,13 +33,12 @@ export function UpdateSection() {
   const busy = status.kind === 'checking' || status.kind === 'downloading'
   return (
     <div className="flex items-center justify-between gap-4">
-      <div className="grid gap-0.5">
-        <span className="text-sm font-semibold">
+      <ExplainOnHover hint={describe(status)}>
+        <span className="cursor-help">
           Version
-          {version !== undefined && <span className="ml-2 font-normal text-muted-foreground">{version}</span>}
+          {version !== undefined && <span className="ml-2 text-muted-foreground">{version}</span>}
         </span>
-        <p className="text-xs text-muted-foreground">{describe(status)}</p>
-      </div>
+      </ExplainOnHover>
       {status.kind === 'ready' ? (
         <Button size="sm" onClick={() => void installUpdate()}>
           Restart and update

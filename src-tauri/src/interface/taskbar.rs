@@ -4,7 +4,6 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use resvg::{tiny_skia, usvg};
 use tauri::{AppHandle, WebviewWindow};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -20,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use super::icons::{coverage, pixels};
 use crate::application::playback::{PlayerCommand, PlayerHandle};
 use crate::application::views::PlayerState;
 use crate::domain::playback::RepeatMode;
@@ -159,19 +159,9 @@ impl Icons {
 
 /// Renders a white SVG icon into a square icon handle of `size` pixels.
 fn draw_icon(svg: &[u8], size: u32) -> Option<HICON> {
-  let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
-  let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
-  let scale = size as f32 / tree.size().width();
-  resvg::render(
-    &tree,
-    tiny_skia::Transform::from_scale(scale, scale),
-    &mut pixmap.as_mut(),
-  );
-  // the icons are white, so the colour is white wherever anything is drawn and only the alpha varies
-  let bgra: Vec<u8> = pixmap
-    .pixels()
-    .iter()
-    .flat_map(|pixel| [255, 255, 255, pixel.alpha()])
+  let bgra: Vec<u8> = coverage(svg, size)?
+    .into_iter()
+    .flat_map(|alpha| [255, 255, 255, alpha])
     .collect();
   let side = i32::try_from(size).ok()?;
   let info = BITMAPINFO {
@@ -266,10 +256,7 @@ thread_local! {
 pub fn attach(window: &WebviewWindow, player: Arc<PlayerHandle>) {
   let Ok(raw) = window.hwnd() else { return };
   let hwnd = HWND(raw.0);
-  let scale = window.scale_factor().unwrap_or(1.0);
-  // rounding keeps the icon a whole number of pixels at any display scale
-  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-  let size = (ICON_PX * scale).round() as u32;
+  let size = pixels(ICON_PX, window.scale_factor().unwrap_or(1.0));
   let Some(icons) = Icons::draw(size) else { return };
   // SAFETY: COM is already initialised on the window's thread by the webview
   let Ok(list) = (unsafe { CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER) }) else {

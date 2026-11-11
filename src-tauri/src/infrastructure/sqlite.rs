@@ -1,5 +1,6 @@
 //! SQLite storage through Diesel: every table, column and join below is checked against `schema.rs` at compile time.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::path::Path;
@@ -7,7 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use diesel::connection::SimpleConnection;
 use diesel::dsl::auto_type;
-use diesel::dsl::{count, sum};
+use diesel::dsl::{count, max, sum};
 use diesel::helper_types::{IsNull, LeftJoin, LeftJoinOn};
 use diesel::prelude::*;
 use diesel::result::{ConnectionError, Error as DieselError};
@@ -16,16 +17,16 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use super::schema::{
   album_artists, albums, artists, download_settings, downloads, folders, lyrics, playback_settings, player_session,
-  playlist_tracks, playlists, track_artists, track_genres, tracks,
+  playlist_tracks, playlists, plays, track_artists, track_genres, tracks, window_settings,
 };
 use crate::application::downloads::DownloadRequest;
 use crate::application::error::{AppError, AppResult, Missing};
 use crate::application::ports::*;
 use crate::application::views::*;
-use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlaylistId, TrackId};
+use crate::domain::ids::{AlbumId, ArtistId, DownloadId, FolderId, PlayId, PlaylistId, TrackId};
 use crate::domain::library::{FolderPath, LibraryError, LibraryFolders};
 use crate::domain::pins::{PinKind, Pins};
-use crate::domain::playback::{Crossfade, QueueSnapshot, RepeatMode, Volume};
+use crate::domain::playback::{Crossfade, Listen, PlaybackContext, QueueSnapshot, RepeatMode, Volume};
 use crate::domain::playlist::{Playlist as PlaylistAggregate, PlaylistName};
 use crate::domain::tags::ReleaseType;
 
@@ -77,6 +78,47 @@ fn columns<T>(ids: &[T], raw: impl Fn(&T) -> u32) -> AppResult<Vec<i32>> {
 /// Totals can outgrow `u32` milliseconds only past 49 days of audio, where showing the cap is good enough.
 fn saturated(total: Option<i64>) -> u32 {
   total.map_or(0, |total| u32::try_from(total).unwrap_or(u32::MAX))
+}
+
+/// The id of a played song or playlist and when it was last played, none when no play of it counts.
+type ScoreRow = (i32, Option<i64>);
+
+/// Scored rows as ids and scores, the highest first, leaving out those without one.
+fn ranked<I>(rows: Vec<ScoreRow>, id: impl Fn(u32) -> I) -> AppResult<Vec<(I, u32)>> {
+  let mut rows: Vec<(i32, u32)> = rows
+    .into_iter()
+    .map(|(key, score)| (key, saturated(score)))
+    .filter(|(_, score)| *score > 0)
+    .collect();
+  rows.sort_by_key(|(_, score)| Reverse(*score));
+  rows
+    .into_iter()
+    .map(|(key, score)| Ok((id(stored(key)?), score)))
+    .collect()
+}
+
+/// Stored spelling of the kind of a playback context, the same words the migration's CHECK allows.
+fn context_kind(context: PlaybackContext) -> &'static str {
+  match context {
+    PlaybackContext::Songs => "songs",
+    PlaybackContext::Album { .. } => "album",
+    PlaybackContext::Artist { .. } => "artist",
+    PlaybackContext::Playlist { .. } => "playlist",
+    PlaybackContext::Folder { .. } => "folder",
+    PlaybackContext::Recent => "recent",
+    PlaybackContext::Added => "added",
+  }
+}
+
+/// The record a context is of, when it is one.
+fn context_id(context: PlaybackContext) -> Option<u32> {
+  match context {
+    PlaybackContext::Album { id } => Some(id.0),
+    PlaybackContext::Artist { id } => Some(id.0),
+    PlaybackContext::Playlist { id } => Some(id.0),
+    PlaybackContext::Folder { id } => Some(id.0),
+    PlaybackContext::Songs | PlaybackContext::Recent | PlaybackContext::Added => None,
+  }
 }
 
 /// SQLite caps the bound parameters of one statement, so long id lists are sent in parts of this size.
@@ -1241,6 +1283,37 @@ impl LibraryQueries for SqliteStore {
       .collect()
   }
 
+  fn scores(&self) -> AppResult<Scores> {
+    let conn = &mut *self.conn();
+    let tracks: Vec<ScoreRow> = plays::table
+      .filter(plays::counted)
+      .group_by(plays::track_id)
+      .select((plays::track_id, max(plays::started_at)))
+      .load(conn)?;
+    let playlists: Vec<ScoreRow> = plays::table
+      .filter(plays::counted)
+      .filter(plays::context_kind.eq(context_kind(PlaybackContext::Playlist { id: PlaylistId(0) })))
+      .filter(plays::context_id.is_not_null())
+      .group_by(plays::context_id)
+      .select((plays::context_id.assume_not_null(), max(plays::started_at)))
+      .load(conn)?;
+    Ok(Scores {
+      tracks: ranked(tracks, TrackId)?,
+      playlists: ranked(playlists, PlaylistId)?,
+    })
+  }
+
+  fn newest_tracks(&self, limit: u32) -> AppResult<Vec<Track>> {
+    let conn = &mut *self.conn();
+    let rows = track_source()
+      .filter(present())
+      .select(TrackRow::as_select())
+      .order((tracks::modified.desc(), tracks::id.desc()))
+      .limit(i64::from(limit))
+      .load(conn)?;
+    tracks_from(conn, rows)
+  }
+
   fn playlist(&self, id: PlaylistId) -> AppResult<PlaylistDetail> {
     let key = column(id.0)?;
     let playlist = single(self.load_playlists(Some(key))?, Missing::Playlist(id))?;
@@ -1372,6 +1445,44 @@ impl DownloadSettingsStore for SqliteStore {
     diesel::insert_into(download_settings::table)
       .values(&row)
       .on_conflict(download_settings::id)
+      .do_update()
+      .set(&row)
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+}
+
+#[derive(Queryable, Selectable, Insertable, AsChangeset)]
+#[diesel(table_name = window_settings, check_for_backend(Sqlite))]
+struct WindowSettingsRow {
+  id: i32,
+  close_to_tray: bool,
+  start_hidden: bool,
+}
+
+impl WindowSettingsStore for SqliteStore {
+  /// Falls back to the defaults when nothing was saved yet or the row cannot be read.
+  fn window_settings(&self) -> WindowSettings {
+    window_settings::table
+      .find(SETTINGS_ID)
+      .select(WindowSettingsRow::as_select())
+      .first(&mut *self.conn())
+      .map(|row| WindowSettings {
+        close_to_tray: row.close_to_tray,
+        start_hidden: row.start_hidden,
+      })
+      .unwrap_or_default()
+  }
+
+  fn save_window_settings(&self, settings: WindowSettings) -> AppResult<()> {
+    let row = WindowSettingsRow {
+      id: SETTINGS_ID,
+      close_to_tray: settings.close_to_tray,
+      start_hidden: settings.start_hidden,
+    };
+    diesel::insert_into(window_settings::table)
+      .values(&row)
+      .on_conflict(window_settings::id)
       .do_update()
       .set(&row)
       .execute(&mut *self.conn())?;
@@ -1602,6 +1713,49 @@ impl LyricsStore for SqliteStore {
   }
 }
 
+#[derive(Insertable)]
+#[diesel(table_name = plays)]
+struct PlayRow {
+  track_id: i32,
+  context_kind: Option<&'static str>,
+  context_id: Option<i32>,
+  started_at: i64,
+  heard_ms: i32,
+  counted: bool,
+}
+
+impl PlayRow {
+  fn new(listen: &Listen) -> AppResult<Self> {
+    let context = listen.context();
+    Ok(Self {
+      track_id: column(listen.track().0)?,
+      context_kind: context.map(context_kind),
+      context_id: column_opt(context.and_then(context_id))?,
+      started_at: listen.started_at(),
+      heard_ms: i32::try_from(listen.heard().as_millis()).unwrap_or(i32::MAX),
+      counted: listen.counts(),
+    })
+  }
+}
+
+impl PlayHistory for SqliteStore {
+  fn add_listen(&self, listen: &Listen) -> AppResult<PlayId> {
+    let id: i32 = diesel::insert_into(plays::table)
+      .values(PlayRow::new(listen)?)
+      .returning(plays::id)
+      .get_result(&mut *self.conn())?;
+    Ok(PlayId(stored(id)?))
+  }
+
+  fn update_listen(&self, id: PlayId, listen: &Listen) -> AppResult<()> {
+    let row = PlayRow::new(listen)?;
+    diesel::update(plays::table.find(column(id.0)?))
+      .set((plays::heard_ms.eq(row.heard_ms), plays::counted.eq(row.counted)))
+      .execute(&mut *self.conn())?;
+    Ok(())
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1656,6 +1810,19 @@ mod tests {
     store.index_tracks(&folder, &[scanned(&held, "Held")]).unwrap();
     let tracks = store.playlist(playlist_id).unwrap().tracks;
     assert_eq!((tracks[0].id, tracks[0].presence), (id, Presence::Present));
+  }
+
+  #[test]
+  fn window_settings_round_trip() {
+    let store = SqliteStore::in_memory().unwrap();
+    assert_eq!(store.window_settings(), WindowSettings::default());
+    let saved = WindowSettings {
+      close_to_tray: false,
+      start_hidden: true,
+    };
+    store.save_window_settings(saved).unwrap();
+    store.save_window_settings(saved).unwrap();
+    assert_eq!(store.window_settings(), saved);
   }
 
   #[test]
@@ -1722,6 +1889,68 @@ mod tests {
     let loaded = store.download_settings();
     assert_eq!(loaded.folder, saved.folder);
     assert_eq!(loaded.tools_checked_at, Some(42));
+  }
+
+  #[test]
+  fn home_shows_what_was_played_and_added_last() {
+    use std::time::Duration;
+
+    use crate::application::home;
+
+    let store = SqliteStore::in_memory().unwrap();
+    let folder = FolderPath::new(if cfg!(windows) { r"C:\Music" } else { "/music" }).unwrap();
+    store
+      .save_folders(&LibraryFolders::restore(vec![folder.clone()]))
+      .unwrap();
+    let path = |name: &str| folder.as_path().join(name).to_string_lossy().into_owned();
+    let (one, two) = (path("one.mp3"), path("two.mp3"));
+    store
+      .index_tracks(
+        &folder,
+        &[
+          scanned(&one, "One"),
+          ScannedTrack {
+            modified: 2,
+            ..scanned(&two, "Two")
+          },
+        ],
+      )
+      .unwrap();
+    let (one, two) = (store.track_at(&one).unwrap(), store.track_at(&two).unwrap());
+    let playlist = store.create_playlist(&PlaylistName::new("Mix").unwrap(), None).unwrap();
+    let length = Duration::from_secs(200);
+    let heard = |track, context, started_at, seconds| {
+      let mut listen = Listen::new(track, context, length, started_at);
+      listen.hear(Duration::from_secs(seconds));
+      store.add_listen(&listen).unwrap()
+    };
+    // the first song played on from the playlist until it counts, then a skipped moment of the second one
+    let long = heard(one, Some(PlaybackContext::Playlist { id: playlist }), 100, 20);
+    let mut longer = Listen::new(one, Some(PlaybackContext::Playlist { id: playlist }), length, 100);
+    longer.hear(Duration::from_secs(120));
+    store.update_listen(long, &longer).unwrap();
+    heard(two, Some(PlaybackContext::Songs), 200, 5);
+
+    let recent = store.scores().unwrap();
+    assert_eq!(recent.tracks, vec![(one, 100)]);
+    assert_eq!(recent.playlists, vec![(playlist, 100)]);
+
+    // the song lends its play to its album and artist, while the playlist counts only what was played from it
+    let page = home::home(&store).unwrap();
+    let kinds: Vec<&str> = page
+      .recent
+      .iter()
+      .map(|entry| match entry {
+        HomeEntry::Track { .. } => "track",
+        HomeEntry::Album { .. } => "album",
+        HomeEntry::Artist { .. } => "artist",
+        HomeEntry::Playlist { .. } => "playlist",
+      })
+      .collect();
+    assert_eq!(kinds, ["track", "album", "artist", "playlist"]);
+    let ids = |tracks: &[Track]| tracks.iter().map(|track| track.id).collect::<Vec<_>>();
+    assert_eq!(ids(&home::recent_songs(&store).unwrap()), [one]);
+    assert_eq!(ids(&page.added), [two, one]);
   }
 
   #[test]

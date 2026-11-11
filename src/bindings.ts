@@ -24,6 +24,8 @@ export const commands = {
   listGenres: () => typedError<Genre[], AppError>(__TAURI_INVOKE("list_genres")),
   getArtist: (id: ArtistId) => typedError<ArtistDetail, AppError>(__TAURI_INVOKE("get_artist", { id })),
   listPlaylists: () => typedError<Playlist[], AppError>(__TAURI_INVOKE("list_playlists")),
+  /**  The home page: what was played last and the songs added last. */
+  getHome: () => typedError<Home, AppError>(__TAURI_INVOKE("get_home")),
   getPlaylist: (id: PlaylistId) => typedError<PlaylistDetail, AppError>(__TAURI_INVOKE("get_playlist", { id })),
   /**  The playlists that already hold the song, which its add to playlist menu greys out. */
   playlistsWithTrack: (trackId: TrackId) => typedError<PlaylistId[], AppError>(__TAURI_INVOKE("playlists_with_track", { trackId })),
@@ -77,6 +79,11 @@ export const commands = {
   setDiscordStatus: (shown: boolean) => __TAURI_INVOKE<void>("set_discord_status", { shown }),
   /**  Sets how many seconds the end of a song and the start of the next play over each other; zero turns it off. */
   setCrossfade: (seconds: number) => typedError<null, AppError>(__TAURI_INVOKE("set_crossfade", { seconds })),
+  getWindowSettings: () => __TAURI_INVOKE<WindowSettings>("get_window_settings"),
+  /**  Makes closing the window hide it to the tray, or quit the app again. */
+  setCloseToTray: (closeToTray: boolean) => typedError<WindowSettings, AppError>(__TAURI_INVOKE("set_close_to_tray", { closeToTray })),
+  /**  Makes a launch by Windows at sign-in stay in the tray, or show the window. */
+  setStartHidden: (startHidden: boolean) => typedError<WindowSettings, AppError>(__TAURI_INVOKE("set_start_hidden", { startHidden })),
   getDownloadSettings: () => __TAURI_INVOKE<DownloadSettingsView>("get_download_settings"),
   /**  Sets the folder downloads go to; null goes back to the system Music folder. */
   setDownloadFolder: (folder: string | null) => typedError<DownloadSettingsView, AppError>(__TAURI_INVOKE("set_download_folder", { folder })),
@@ -107,6 +114,7 @@ export const commands = {
 /** Events */
 export const events = {
   downloadsChanged: makeEvent<DownloadsChanged, DownloadsChanged>("downloads-changed"),
+  historyChanged: makeEvent<HistoryChanged, HistoryChanged>("history-changed"),
   libraryChanged: makeEvent<LibraryChanged, LibraryChanged>("library-changed"),
   playbackFailed: makeEvent<PlaybackFailed, PlaybackFailed>("playback-failed"),
   playbackProgress: makeEvent<PlaybackProgress, PlaybackProgress>("playback-progress"),
@@ -312,6 +320,20 @@ export type Genre = {
   trackCount: number,
 };
 
+/**  The play history gained a play or more time heard, so the home page is stale. */
+export type HistoryChanged = null;
+
+/**  The sections of the home page. */
+export type Home = {
+  /**  A few songs, albums, artists and playlists mixed, the one played last first. */
+  recent: HomeEntry[],
+  /**  The songs added last, the newest first. */
+  added: Track[],
+};
+
+/**  One card of a home page section. */
+export type HomeEntry = { kind: "track"; track: Track } | { kind: "album"; album: Album } | { kind: "artist"; artist: Artist } | { kind: "playlist"; playlist: Playlist };
+
 /**  Tracks, albums or artists changed, so every library view is stale. */
 export type LibraryChanged = null;
 
@@ -350,7 +372,11 @@ export type PinError = { type: "notPinned" };
 export type PinTarget = { kind: "playlist"; id: PlaylistId } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId };
 
 /**  Where the queue was started from, so a view can tell whether the playing track belongs to it. */
-export type PlaybackContext = { kind: "songs" } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId } | { kind: "playlist"; id: PlaylistId } | { kind: "folder"; id: FolderId };
+export type PlaybackContext = { kind: "songs" } | { kind: "album"; id: AlbumId } | { kind: "artist"; id: ArtistId } | { kind: "playlist"; id: PlaylistId } | { kind: "folder"; id: FolderId } | 
+/**  The songs the home page shows as played last. */
+{ kind: "recent" } | 
+/**  The songs the home page shows as added last. */
+{ kind: "added" };
 
 export type PlaybackError = { type: "volumeOutOfRange" } | { type: "nothingToPlay" } | { type: "crossfadeOutOfRange" } | { type: "entryNotInQueue" };
 
@@ -606,6 +632,15 @@ export type TrackTags = {
   format: string,
   bitrateKbps: number | null,
   durationMs: number,
+};
+
+/**
+*  How the window behaves: whether closing it hides it to the tray, and whether a launch by Windows at sign-in stays
+*  in the tray without showing it.
+*/
+export type WindowSettings = {
+  closeToTray: boolean,
+  startHidden: boolean,
 };
 
 /* Tauri Specta runtime */

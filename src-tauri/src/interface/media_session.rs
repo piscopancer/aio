@@ -37,13 +37,7 @@ impl Details {
   fn of(track: &Track) -> Self {
     Self {
       title: track.title.clone(),
-      // the same credit line the player bar shows
-      artist: track
-        .artists
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", "),
+      artist: track.credit(),
       album: track.album.clone().unwrap_or_default(),
       cover: track.cover.clone(),
       duration_ms: track.duration_ms,
@@ -140,10 +134,7 @@ impl Session {
   }
 
   fn show(&self, state: &PlayerState) -> windows_core::Result<()> {
-    let track = state
-      .index
-      .and_then(|index| state.queue.get(usize::try_from(index).ok()?))
-      .map(|item| &item.track);
+    let track = state.current_track();
     let mut shown = self.shown();
     let Some(track) = track else {
       // with nothing loaded the session leaves the flyout

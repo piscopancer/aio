@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactElement } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -25,9 +25,14 @@ function FieldLabel({ icon: Icon, hint, className, children, ...props }: Compone
     </label>
   )
   if (hint === undefined) return label
+  return <ExplainOnHover hint={hint}>{label}</ExplainOnHover>
+}
+
+/** Explains the name it wraps in a tooltip above it, with `code` in backticks as in Markdown. */
+function ExplainOnHover({ hint, children }: { hint: string; children: ReactElement }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{label}</TooltipTrigger>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side="top" align="start" className="max-w-72 text-pretty">
         {hint.split(CODE_MARK).map((part, index) =>
           // every second part sits between a pair of backticks
@@ -44,4 +49,4 @@ function FieldLabel({ icon: Icon, hint, className, children, ...props }: Compone
   )
 }
 
-export { FieldLabel, type FieldLabelProps }
+export { ExplainOnHover, FieldLabel, type FieldLabelProps }

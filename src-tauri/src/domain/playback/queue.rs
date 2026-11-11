@@ -257,6 +257,10 @@ impl<T: Clone> Queue<T> {
     if let Some(original) = &mut self.unshuffled {
       original.retain(|entry| entry.key != key);
     }
+    // an emptied queue plays from nothing, so starting its old context again starts it afresh instead of resuming
+    if self.entries.is_empty() {
+      self.context = None;
+    }
     let Some(current) = self.current else {
       return Ok(Removal::Other);
     };
@@ -519,6 +523,16 @@ mod tests {
     queue.enqueue(vec![9]);
     queue.set_shuffle(false, &mut rng());
     assert_eq!(items(&queue), [1, 2, 3, 9]);
+  }
+
+  #[test]
+  fn removing_the_last_entry_leaves_no_context() {
+    let mut queue = queue(&[1, 2], 0, false, RepeatMode::Off);
+    let keys: Vec<_> = queue.entries().iter().map(QueueEntry::key).collect();
+    queue.remove(keys[0]).unwrap();
+    assert_eq!(queue.context(), Some(PlaybackContext::Songs));
+    queue.remove(keys[1]).unwrap();
+    assert_eq!(queue.context(), None);
   }
 
   #[test]

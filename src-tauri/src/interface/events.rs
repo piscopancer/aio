@@ -26,6 +26,10 @@ pub struct PlaybackFailed(pub AppError);
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct LibraryChanged;
 
+/// The play history gained a play or more time heard, so the home page is stale.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct HistoryChanged;
+
 /// Progress of a running library scan.
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct ScanProgress {
@@ -59,6 +63,7 @@ impl Notifier for TauriNotifier {
     {
       super::taskbar::show(&self.0, state);
       super::media_session::show(state);
+      super::tray::show(&self.0, state);
     }
   }
 
@@ -76,6 +81,10 @@ impl Notifier for TauriNotifier {
 
   fn library_changed(&self) {
     self.emit(LibraryChanged);
+  }
+
+  fn history_changed(&self) {
+    self.emit(HistoryChanged);
   }
 
   fn scan_progress(&self, done: u32, total: u32) {

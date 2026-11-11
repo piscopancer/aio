@@ -3,13 +3,16 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use super::downloads::now;
 use super::error::AppResult;
-use super::ports::{AudioOutput, LibraryQueries, Notifier, PlaybackSettings, PlayerSession, SettingsStore};
+use super::ports::{
+  AudioOutput, LibraryQueries, Notifier, PlayHistory, PlaybackSettings, PlayerSession, SettingsStore,
+};
 use super::views::{PlayerState, QueueItem, Track};
-use crate::domain::ids::TrackId;
+use crate::domain::ids::{PlayId, TrackId};
 use crate::domain::playback::{
-  Advance, Crossfade, Following, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey, QueueSnapshot,
-  Removal, RepeatMode, Volume, resume_point, seamless,
+  Advance, Crossfade, Following, Listen, PlaybackContext, PlaybackError, Previous, Queue, QueueEntry, QueueKey,
+  QueueSnapshot, Removal, RepeatMode, Volume, resume_point, seamless,
 };
 
 /// How often the player checks for the end of a track and reports the position.
@@ -56,11 +59,18 @@ pub enum PlayerCommand {
   Refresh(Vec<Track>),
 }
 
-/// Where a released track was, so it resumes there.
-#[derive(Clone, Copy)]
+/// Where a released track was, so it resumes there, going on with the same listen.
 struct Suspended {
   position: Duration,
   playing: bool,
+  listening: Option<Listening>,
+}
+
+/// The listen of the loaded song, with its id once the history keeps it and how much of it the history holds.
+struct Listening {
+  listen: Listen,
+  id: Option<PlayId>,
+  kept: Duration,
 }
 
 /// Thread-safe handle the interface uses to drive the player and read its last published state.
@@ -159,6 +169,7 @@ pub struct PlaybackService<O: AudioOutput> {
   inbox: PlayerInbox,
   settings: Arc<dyn SettingsStore>,
   queries: Arc<dyn LibraryQueries>,
+  history: Arc<dyn PlayHistory>,
   notifier: Arc<dyn Notifier>,
   queue: Queue<Track>,
   volume: Volume,
@@ -170,6 +181,9 @@ pub struct PlaybackService<O: AudioOutput> {
   loaded: bool,
   playing: bool,
   suspended: Option<Suspended>,
+  listening: Option<Listening>,
+  /// When the time the loaded song was heard for was last taken.
+  heard_at: Instant,
   /// Where the current song resumes when it is first played, after the session was restored at startup.
   resume_at: Option<Duration>,
   /// The queue and position saved last, so that only what changed is written again.
@@ -184,6 +198,7 @@ impl<O: AudioOutput> PlaybackService<O> {
     inbox: PlayerInbox,
     settings: Arc<dyn SettingsStore>,
     queries: Arc<dyn LibraryQueries>,
+    history: Arc<dyn PlayHistory>,
     notifier: Arc<dyn Notifier>,
   ) -> Self {
     let saved = settings.playback_settings();
@@ -192,6 +207,7 @@ impl<O: AudioOutput> PlaybackService<O> {
       inbox,
       settings,
       queries,
+      history,
       notifier,
       queue: Queue::new(saved.shuffle, saved.repeat),
       volume: saved.volume,
@@ -202,6 +218,8 @@ impl<O: AudioOutput> PlaybackService<O> {
       loaded: false,
       playing: false,
       suspended: None,
+      listening: None,
+      heard_at: Instant::now(),
       resume_at: None,
       saved_queue: None,
       saved_position_ms: 0,
@@ -213,7 +231,10 @@ impl<O: AudioOutput> PlaybackService<O> {
     self.restore();
     self.publish();
     loop {
-      match self.inbox.commands.recv_timeout(TICK) {
+      let received = self.inbox.commands.recv_timeout(TICK);
+      // the wait went by as the player was before the command changes it
+      self.hear();
+      match received {
         Ok(command) => {
           if let Err(error) = self.handle(command) {
             self.notifier.playback_failed(&error);
@@ -242,6 +263,7 @@ impl<O: AudioOutput> PlaybackService<O> {
       } else {
         if self.saved_at.elapsed() >= SAVE_POSITION_EVERY {
           self.save_session();
+          self.keep_listen();
         }
         let position_ms = self.position_ms();
         lock(&self.inbox.state).position_ms = position_ms;
@@ -368,6 +390,7 @@ impl<O: AudioOutput> PlaybackService<O> {
           self.suspended = Some(Suspended {
             position: self.output.position(),
             playing: self.playing,
+            listening: self.listening.take(),
           });
           self.stop(Duration::ZERO);
         }
@@ -383,7 +406,10 @@ impl<O: AudioOutput> PlaybackService<O> {
         let Some(suspended) = self.suspended.take() else {
           return Ok(());
         };
-        self.load_current(false, Duration::ZERO)?;
+        let loaded = self.load_current(false, Duration::ZERO);
+        // the same song picked up again, so the listen goes on
+        self.listening = suspended.listening;
+        loaded?;
         self.seek(suspended.position)?;
         if suspended.playing {
           self.output.play(Duration::ZERO);
@@ -446,6 +472,7 @@ impl<O: AudioOutput> PlaybackService<O> {
     self.resume_at = None;
     self.loaded = false;
     self.playing = false;
+    self.end_listen();
     let Some(track) = self.queue.current().map(|entry| entry.item().clone()) else {
       self.output.unload(fade);
       return Err(PlaybackError::NothingToPlay.into());
@@ -453,7 +480,64 @@ impl<O: AudioOutput> PlaybackService<O> {
     self.output.load(&track, self.audible(), play, fade)?;
     self.loaded = true;
     self.playing = play;
+    let length = Duration::from_millis(track.duration_ms.into());
+    self.listening = Some(Listening {
+      listen: Listen::new(track.id, self.queue.context(), length, now()),
+      id: None,
+      kept: Duration::ZERO,
+    });
     Ok(())
+  }
+
+  /// Credits the loaded song with the time since this was last called, when it was playing all that time, and lets the
+  /// home page know once that makes it count as a play.
+  fn hear(&mut self) {
+    let span = self.heard_at.elapsed();
+    self.heard_at = Instant::now();
+    if !self.playing {
+      return;
+    }
+    if let Some(listening) = &mut self.listening
+      && listening.listen.hear(span)
+    {
+      self.keep_listen();
+      self.notifier.history_changed();
+    }
+  }
+
+  /// Writes the listen of the loaded song to the history as heard so far, once any of it was heard; a failure is only
+  /// logged, since playing goes on all the same.
+  fn keep_listen(&mut self) {
+    let Some(listening) = &mut self.listening else {
+      return;
+    };
+    let heard = listening.listen.heard();
+    if heard == listening.kept {
+      return;
+    }
+    let kept = match listening.id {
+      Some(id) => self.history.update_listen(id, &listening.listen),
+      None => self
+        .history
+        .add_listen(&listening.listen)
+        .map(|id| listening.id = Some(id)),
+    };
+    match kept {
+      Ok(()) => listening.kept = heard,
+      Err(error) => eprintln!("saving the play history failed: {error}"),
+    }
+  }
+
+  /// Ends the listen of the song that was loaded, keeping it in the history.
+  fn end_listen(&mut self) {
+    self.keep_listen();
+    if self
+      .listening
+      .take()
+      .is_some_and(|listening| !listening.listen.heard().is_zero())
+    {
+      self.notifier.history_changed();
+    }
   }
 
   fn seek(&mut self, position: Duration) -> AppResult<()> {
@@ -466,6 +550,7 @@ impl<O: AudioOutput> PlaybackService<O> {
     self.output.unload(fade);
     self.loaded = false;
     self.playing = false;
+    self.end_listen();
   }
 
   /// The level the output plays at: silence while muted, the set level otherwise.

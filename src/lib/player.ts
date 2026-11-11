@@ -45,12 +45,20 @@ export function currentItem(state: PlayerState) {
 }
 
 export function sameContext(a: PlaybackContext, b: PlaybackContext) {
-  return a.kind === b.kind && (a.kind === 'songs' || (b.kind !== 'songs' && a.id === b.id))
+  return a.kind === b.kind && (!('id' in a) || ('id' in b && a.id === b.id))
 }
 
-/** Whether `context` is the one the queue was started from. */
-export function useIsPlayingFrom(context: PlaybackContext) {
-  return usePlayer((state) => state.context !== null && sameContext(state.context, context))
+/** Whether a card or button of `context` stands for what plays: the song `trackId`, wherever it was started from, or
+ * else the context itself, when the queue was started from it. */
+function isPlayingFrom(state: PlayerState, context: PlaybackContext, trackId?: TrackId) {
+  return trackId === undefined
+    ? state.context !== null && sameContext(state.context, context)
+    : currentItem(state)?.track.id === trackId
+}
+
+/** Whether `context`, or its song `trackId`, is what plays; see `isPlayingFrom`. */
+export function useIsPlayingFrom(context: PlaybackContext, trackId?: TrackId) {
+  return usePlayer((state) => isPlayingFrom(state, context, trackId))
 }
 
 /** Same kind and id means the same context, whichever object the page built for it. */
@@ -82,11 +90,10 @@ export const player = {
         if (context.kind === 'playlist') await invalidatePlaylists()
       }),
     ),
-  /** Toggles when `context` is already playing, otherwise starts it from the top. */
-  playOrToggle: (context: PlaybackContext) => {
-    const { context: current } = usePlayer.getState()
-    if (current !== null && sameContext(current, context)) player.toggle()
-    else player.play(context)
+  /** Toggles when `context`, or its song `trackId`, is already playing, otherwise starts it from the top or from that song. */
+  playOrToggle: (context: PlaybackContext, trackId?: TrackId) => {
+    if (isPlayingFrom(usePlayer.getState(), context, trackId)) player.toggle()
+    else player.play(context, trackId)
   },
   enqueue: (trackIds: TrackId[]) =>
     report(

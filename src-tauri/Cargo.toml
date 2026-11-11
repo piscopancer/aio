@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 specta = { version = "=2.0.0-rc.26", features = ["derive"] }
@@ -48,6 +48,8 @@ opus-pure = "0.2.3"
 discord-rich-presence = "1.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 
 # the app's own shortcuts replace the browser ones (find, print, reload) the webview would otherwise handle

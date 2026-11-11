@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SongsRouteImport } from './routes/songs'
 import { Route as AlbumsIndexRouteImport } from './routes/albums/index'
 import { Route as AlbumsAlbumIdRouteImport } from './routes/albums/$albumId'
 import { Route as ArtistsIndexRouteImport } from './routes/artists/index'
@@ -21,6 +22,11 @@ import { Route as SettingsFoldersRouteImport } from './routes/settings/folders'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SongsRoute = SongsRouteImport.update({
+  id: '/songs',
+  path: '/songs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AlbumsIndexRoute = AlbumsIndexRouteImport.update({
@@ -61,6 +67,7 @@ const SettingsFoldersRoute = SettingsFoldersRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/songs': typeof SongsRoute
   '/albums/$albumId': typeof AlbumsAlbumIdRoute
   '/artists/$artistId': typeof ArtistsArtistIdRoute
   '/folders/$folderId': typeof FoldersFolderIdRoute
@@ -71,6 +78,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/songs': typeof SongsRoute
   '/albums/$albumId': typeof AlbumsAlbumIdRoute
   '/artists/$artistId': typeof ArtistsArtistIdRoute
   '/folders/$folderId': typeof FoldersFolderIdRoute
@@ -82,6 +90,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/songs': typeof SongsRoute
   '/albums/$albumId': typeof AlbumsAlbumIdRoute
   '/artists/$artistId': typeof ArtistsArtistIdRoute
   '/folders/$folderId': typeof FoldersFolderIdRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/songs'
     | '/albums/$albumId'
     | '/artists/$artistId'
     | '/folders/$folderId'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/songs'
     | '/albums/$albumId'
     | '/artists/$artistId'
     | '/folders/$folderId'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/songs'
     | '/albums/$albumId'
     | '/artists/$artistId'
     | '/folders/$folderId'
@@ -125,6 +137,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SongsRoute: typeof SongsRoute
   AlbumsAlbumIdRoute: typeof AlbumsAlbumIdRoute
   ArtistsArtistIdRoute: typeof ArtistsArtistIdRoute
   FoldersFolderIdRoute: typeof FoldersFolderIdRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/songs': {
+      id: '/songs'
+      path: '/songs'
+      fullPath: '/songs'
+      preLoaderRoute: typeof SongsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/albums/': {
@@ -197,6 +217,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SongsRoute: SongsRoute,
   AlbumsAlbumIdRoute: AlbumsAlbumIdRoute,
   ArtistsArtistIdRoute: ArtistsArtistIdRoute,
   FoldersFolderIdRoute: FoldersFolderIdRoute,

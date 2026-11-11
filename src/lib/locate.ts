@@ -7,7 +7,7 @@ import { contextKey, currentItem, songsContext, usePlayer } from '@/lib/player'
 export function contextLink(context: PlaybackContext) {
   switch (context.kind) {
     case 'songs':
-      return linkOptions({ to: '/' })
+      return linkOptions({ to: '/songs' })
     case 'album':
       return linkOptions({ to: '/albums/$albumId', params: { albumId: context.id } })
     case 'artist':
@@ -16,6 +16,9 @@ export function contextLink(context: PlaybackContext) {
       return linkOptions({ to: '/playlists/$playlistId', params: { playlistId: context.id } })
     case 'folder':
       return linkOptions({ to: '/folders/$folderId', params: { folderId: context.id } })
+    case 'recent':
+    case 'added':
+      return linkOptions({ to: '/' })
     default:
       return context satisfies never
   }

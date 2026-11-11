@@ -21,7 +21,13 @@ pub struct Cli {
   #[cfg(debug_assertions)]
   #[arg(long, value_enum)]
   scenario: Option<Scenario>,
+  /// Set by the entry Windows starts the app with at sign-in, which may keep it in the tray.
+  #[arg(long, hide = true)]
+  pub autostart: bool,
 }
+
+/// The flag the autostart entry passes, as `Cli` parses it.
+pub const AUTOSTART_FLAG: &str = "--autostart";
 
 impl Cli {
   /// The requested scenario; release builds have no such flag and always run the real library.

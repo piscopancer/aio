@@ -1,6 +1,6 @@
 import { PauseIcon, PlayIcon } from 'lucide-react'
 import type { ComponentProps } from 'react'
-import type { PlaybackContext } from '@/bindings'
+import type { PlaybackContext, TrackId } from '@/bindings'
 import { Button } from '@/components/ui/button'
 import { player, useIsPlayingFrom, usePlayer } from '@/lib/player'
 import { cn } from '@/lib/utils'
@@ -11,19 +11,21 @@ const looks = {
   ghost: { variant: 'ghost', size: 'icon', className: 'hover:bg-foreground/10 [&_svg]:size-3.5' },
 } as const satisfies Record<string, Pick<ComponentProps<typeof Button>, 'variant' | 'size' | 'className'>>
 
-/** Round button that starts a view or pauses it when the view is what is playing. */
+/** Round button that starts a view, or one song of it with `trackId`, or pauses it when that is what is playing. */
 export function PlayButton({
   context,
+  trackId,
   look = 'accent',
   disabled,
   className,
 }: {
   context: PlaybackContext
+  trackId?: TrackId | undefined
   look?: keyof typeof looks
   disabled?: boolean | undefined
   className?: string | undefined
 }) {
-  const playingHere = useIsPlayingFrom(context)
+  const playingHere = useIsPlayingFrom(context, trackId)
   const isPlaying = usePlayer((state) => playingHere && state.isPlaying)
   const Icon = isPlaying ? PauseIcon : PlayIcon
   return (
@@ -35,7 +37,7 @@ export function PlayButton({
       className={cn(looks[look].className, className)}
       onClick={(event) => {
         event.stopPropagation()
-        player.playOrToggle(context)
+        player.playOrToggle(context, trackId)
       }}
     >
       <Icon className="fill-current" />

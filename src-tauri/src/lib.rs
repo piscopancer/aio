@@ -21,7 +21,7 @@ use crate::application::lyrics::LyricsService;
 use crate::application::pins::PinService;
 use crate::application::playback::{PlaybackService, player_channel};
 use crate::application::playlists::PlaylistService;
-use crate::application::ports::SettingsStore;
+use crate::application::ports::{SettingsStore, WindowSettingsStore};
 use crate::application::tag_search::TagSearchService;
 use crate::application::tags::TagService;
 use crate::domain::library::FolderPath;
@@ -38,9 +38,10 @@ use crate::infrastructure::tag_sources::{
   AcoustId, Bandcamp, CoverDownloads, Deezer, Itunes, MusicBrainz, YoutubeMusic,
 };
 use crate::infrastructure::tools::ToolKit;
-use crate::interface::cli::Cli;
+use crate::interface::cli::{AUTOSTART_FLAG, Cli};
 use crate::interface::commands::{self, AppState};
 use crate::interface::events::{self, TauriNotifier};
+use crate::interface::window;
 
 /// Single registry of every command and event, used at runtime and to generate `src/bindings.ts`.
 fn specta_builder() -> Builder<tauri::Wry> {
@@ -65,6 +66,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::list_genres,
       commands::get_artist,
       commands::list_playlists,
+      commands::get_home,
       commands::get_playlist,
       commands::playlists_with_track,
       commands::create_playlist,
@@ -99,6 +101,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
       commands::set_fades,
       commands::set_discord_status,
       commands::set_crossfade,
+      commands::get_window_settings,
+      commands::set_close_to_tray,
+      commands::set_start_hidden,
       commands::get_download_settings,
       commands::set_download_folder,
       commands::check_download_folder,
@@ -121,6 +126,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
       events::PlaybackProgress,
       events::PlaybackFailed,
       events::LibraryChanged,
+      events::HistoryChanged,
       events::ScanProgress,
       events::DownloadsChanged,
       events::ToolsChanged,
@@ -172,13 +178,19 @@ fn open_devtools_port() {
 pub fn run() {
   #[cfg(debug_assertions)]
   open_devtools_port();
-  let scenario = Cli::parse().scenario();
+  let cli = Cli::parse();
+  let scenario = cli.scenario();
   let builder = specta_builder();
 
   #[cfg(debug_assertions)]
   export_bindings(&builder);
 
   tauri::Builder::default()
+    // first, so a second launch hands over to the running app before anything else of it starts
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      window::reveal(app)
+    }))
+    .plugin(tauri_plugin_autostart::Builder::new().arg(AUTOSTART_FLAG).build())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_decorum::init())
@@ -186,10 +198,19 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .invoke_handler(builder.invoke_handler())
+    .on_window_event(|window, event| {
+      if let Some(state) = window.try_state::<AppState>() {
+        window::on_event(window, event, state.window_settings.as_ref());
+      }
+      #[cfg(windows)]
+      if let tauri::WindowEvent::ThemeChanged(theme) = event {
+        interface::tray::retheme(window.app_handle(), *theme);
+      }
+    })
     .setup(move |app| {
       builder.mount_events(app);
       // the toolbar stands in for the title bar; on Windows decorum draws the window buttons into it, keeping snap layouts
-      if let Some(window) = app.get_webview_window("main") {
+      if let Some(window) = app.get_webview_window(window::MAIN) {
         window.create_overlay_titlebar()?;
         #[cfg(windows)]
         disable_browser_features(&window);
@@ -238,12 +259,22 @@ pub fn run() {
       let (player, inbox) = player_channel(store.playback_settings());
       let player = Arc::new(player);
       #[cfg(windows)]
-      if let Some(window) = app.get_webview_window("main") {
+      if let Some(window) = app.get_webview_window(window::MAIN) {
         interface::taskbar::attach(&window, player.clone());
         interface::media_session::attach(&window, player.clone());
       }
-      let (settings, player_queries, player_notifier) = (store.clone(), store.clone(), notifier.clone());
-      audio::spawn(move |output| PlaybackService::new(output, inbox, settings, player_queries, player_notifier).run());
+      #[cfg(windows)]
+      interface::tray::attach(app.handle(), player.clone())?;
+      // the window starts hidden, so a launch by Windows that stays in the tray never flashes it
+      let start_hidden = cli.autostart && scenario.is_none() && store.window_settings().start_hidden;
+      if !start_hidden {
+        window::reveal(app.handle());
+      }
+      let (settings, player_queries, history, player_notifier) =
+        (store.clone(), store.clone(), store.clone(), notifier.clone());
+      audio::spawn(move |output| {
+        PlaybackService::new(output, inbox, settings, player_queries, history, player_notifier).run()
+      });
       let lyrics = Arc::new(LyricsService::new(
         files.clone(),
         Arc::new(Lrclib::new()),
@@ -303,8 +334,9 @@ pub fn run() {
         tag_search,
         lyrics,
         downloads,
-        queries: store,
+        queries: store.clone(),
         player,
+        window_settings: store,
         scenario,
       });
       Ok(())
